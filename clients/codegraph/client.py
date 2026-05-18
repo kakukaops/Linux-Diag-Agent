@@ -65,6 +65,73 @@ class CodeGraphClient:
             logger.warning("CodeGraph health check failed: %s", exc)
             return False
 
+    def health_status(self) -> dict[str, Any]:
+        """Return a detailed health status dict for observability."""
+        import time
+        t0 = time.monotonic()
+        try:
+            r = self._client.get(f"{self._base}{_HEALTH_PATH}")
+            latency_ms = round((time.monotonic() - t0) * 1000, 1)
+            healthy = r.status_code == 200
+            detail: dict[str, Any] = {}
+            try:
+                detail = r.json()
+            except Exception:
+                pass
+            return {
+                "healthy": healthy,
+                "status_code": r.status_code,
+                "latency_ms": latency_ms,
+                "endpoint": self._base,
+                "detail": detail,
+            }
+        except Exception as exc:
+            return {
+                "healthy": False,
+                "error": str(exc),
+                "endpoint": self._base,
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+
+    def search_code_degraded(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Degraded-mode search: falls back to PG BM25 on kernel_commit.
+
+        Used when CodeGraph is unreachable.
+        """
+        from sqlalchemy import text as sa_text
+        from storage.pg.engine import get_engine
+
+        engine = get_engine()
+        tokens = [t for t in query.split() if len(t) >= 3]
+        if not tokens:
+            return []
+        tsq = " | ".join(tokens[:10])
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    sa_text("""
+                        SELECT hash, subject,
+                               ts_rank_cd(body_tsv, to_tsquery('english', :q)) AS score
+                          FROM kernel_commit
+                         WHERE body_tsv @@ to_tsquery('english', :q)
+                         ORDER BY score DESC
+                         LIMIT :lim
+                    """),
+                    {"q": tsq, "lim": limit},
+                ).fetchall()
+            return [
+                {"file": r.hash[:12], "snippet": r.subject, "score": float(r.score)}
+                for r in rows
+            ]
+        except Exception as exc:
+            logger.error("Degraded code search failed: %s", exc)
+            return []
+
     # ── MCP JSON-RPC call ─────────────────────────────────────────────────
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))

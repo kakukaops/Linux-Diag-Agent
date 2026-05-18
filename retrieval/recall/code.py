@@ -13,20 +13,20 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
     from clients.codegraph.client import get_codegraph_client, CodeGraphError
 
     client = get_codegraph_client()
-    if not client.health_check():
-        logger.warning("CodeGraph unavailable; code route returns empty")
-        return []
-
     q = " ".join(query.keywords) if query.keywords else query.raw_question
-    try:
-        hits = client.search_code(
-            q,
-            version_hint=query.kernel_version,
-            limit=query.limit_per_route,
-        )
-    except CodeGraphError as exc:
-        logger.error("CodeGraph search_code failed: %s", exc)
-        return []
+    if not client.health_check():
+        logger.warning("CodeGraph unavailable; using degraded PG fallback")
+        hits = client.search_code_degraded(q, limit=query.limit_per_route)
+    else:
+        try:
+            hits = client.search_code(
+                q,
+                version_hint=query.kernel_version,
+                limit=query.limit_per_route,
+            )
+        except CodeGraphError as exc:
+            logger.error("CodeGraph search_code failed: %s; using degraded fallback", exc)
+            hits = client.search_code_degraded(q, limit=query.limit_per_route)
 
     results: list[Evidence] = []
     for h in hits:

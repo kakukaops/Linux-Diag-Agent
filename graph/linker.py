@@ -28,6 +28,13 @@ _BZ_URL_RE = re.compile(r"bugzilla\.kernel\.org/show_bug\.cgi\?id=(\d+)")
 _BZ_SHORT_RE = re.compile(r"(?:bsc#|BZ-|bz#|bug #?)(\d+)", re.IGNORECASE)
 # CVE pattern in trailers
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
+# Link: trailer pointing to lore message-ID URL
+_LORE_URL_RE = re.compile(
+    r"https?://lore\.kernel\.org/[^\s]+/([^/\s>]+@[^/\s>]+)",
+    re.IGNORECASE,
+)
+# Subject-based match prefix (strip Re:/Patch prefixes)
+_SUBJECT_CLEAN_RE = re.compile(r"^\s*(?:Re|Patch|RFC|PATCH)[:/\s]*", re.IGNORECASE)
 
 
 @dataclass
@@ -35,6 +42,7 @@ class LinkReport:
     commit_bug_inserted: int = 0
     commit_bug_skipped: int = 0
     commit_cve_inserted: int = 0
+    commit_message_inserted: int = 0
     upstream_bridged: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -48,12 +56,13 @@ def run_linker(engine: "Engine", *, batch_size: int = 1000) -> LinkReport:
 
     with engine.begin() as conn:
         _link_trailer_to_bug(conn, batch_size, report)
+        _link_link_trailer_to_message(conn, batch_size, report)
         _link_olk_upstream(conn, report)
 
     logger.info(
-        "Linker done: %d commit-bug, %d cve, %d upstream bridges, %d errors",
+        "Linker done: %d commit-bug, %d commit-msg, %d upstream bridges, %d errors",
         report.commit_bug_inserted,
-        report.commit_cve_inserted,
+        report.commit_message_inserted,
         report.upstream_bridged,
         len(report.errors),
     )
@@ -113,6 +122,75 @@ def _extract_bugzilla_ids(body: str) -> list[tuple[str, str]]:
     for m in _BZ_SHORT_RE.finditer(body):
         results.append((m.group(1), "fixes"))
     return results
+
+
+# ── Link: trailer → LKML message linker (WBS 4.2) ────────────────────────────
+
+
+def _link_link_trailer_to_message(conn: Any, batch_size: int, report: LinkReport) -> None:
+    """Mine Link:/In-reply-to: trailers to create link_commit_message rows."""
+    sql = text("""
+        SELECT kc.hash, kc.body, kc.subject
+          FROM kernel_commit kc
+         WHERE kc.body IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM link_commit_message lcm
+                WHERE lcm.commit_hash = kc.hash
+                  AND lcm.match_method IN ('link_trailer', 'subject')
+           )
+         LIMIT :limit
+    """)
+    rows = conn.execute(sql, {"limit": batch_size}).fetchall()
+
+    for commit_hash, body, subject in rows:
+        body = body or ""
+        # 1. Lore URL → message_id from Link: trailers
+        for m in _LORE_URL_RE.finditer(body):
+            msg_id = m.group(1)
+            _upsert_commit_message_link(conn, commit_hash, msg_id, "link_trailer", report)
+
+        # 2. Subject match fallback — search lkml_message by cleaned subject
+        if subject:
+            clean_subject = _SUBJECT_CLEAN_RE.sub("", subject).strip()
+            if clean_subject:
+                row = conn.execute(
+                    text("""
+                        SELECT message_id FROM lkml_message
+                         WHERE subject ILIKE :s
+                         LIMIT 1
+                    """),
+                    {"s": f"%{clean_subject[:80]}%"},
+                ).fetchone()
+                if row:
+                    _upsert_commit_message_link(conn, commit_hash, row[0], "subject", report)
+
+
+def _upsert_commit_message_link(
+    conn: Any,
+    commit_hash: str,
+    message_id: str,
+    method: str,
+    report: LinkReport,
+) -> None:
+    try:
+        exists = conn.execute(
+            text("SELECT 1 FROM lkml_message WHERE message_id = :mid"),
+            {"mid": message_id},
+        ).fetchone()
+        if not exists:
+            return
+        conn.execute(
+            text("""
+                INSERT INTO link_commit_message
+                       (commit_hash, message_id, link_type, match_method, confidence)
+                VALUES (:h, :mid, 'link_trailer', :method, 0.9)
+                ON CONFLICT ON CONSTRAINT uq_lcm DO NOTHING
+            """),
+            {"h": commit_hash, "mid": message_id, "method": method},
+        )
+        report.commit_message_inserted += 1
+    except Exception as exc:
+        report.errors.append(f"commit_message link {commit_hash}/{message_id}: {exc}")
 
 
 # ── OLK ↔ upstream bridge ─────────────────────────────────────────────────────

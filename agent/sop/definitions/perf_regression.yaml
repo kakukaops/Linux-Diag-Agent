@@ -1,0 +1,30 @@
+name: perf_regression
+description: Kernel performance regression diagnosis SOP
+fault_kinds: [generic]
+
+steps:
+  - "Identify the regression: compare perf metrics before/after kernel upgrade"
+  - "Profile with perf top/record to locate hot functions"
+  - "Check for scheduler changes: CFS bandwidth, NUMA balancing, idle load balancing"
+  - "Look for memory subsystem regressions: huge page allocation, compaction, reclaim"
+  - "Check for lock contention: perf lock / lockstat"
+  - "Search kernel commits introducing perf regressions in the hot subsystem"
+  - "Check for OLK-specific power management or frequency scaling changes"
+  - "Verify NUMA topology: numactl, /sys/devices/system/node/"
+  - "Bisect if possible: identify the regressing commit range"
+  - "Propose fix: config tuning / backport / workload adaptation"
+
+hypotheses_template: |
+  For performance regression after kernel change:
+  1. Scheduler change causing suboptimal task placement or wakeup latency
+  2. Memory reclaim aggressiveness increase causing application stalls
+  3. Lock contention increase due to kernel subsystem refactoring
+  4. Power management interference (C-states, p-states) with latency-sensitive workload
+
+report_sections:
+  - executive_summary
+  - performance_metrics
+  - regression_analysis
+  - root_cause_analysis
+  - remediation
+  - references

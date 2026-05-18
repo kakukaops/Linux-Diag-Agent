@@ -1,0 +1,30 @@
+name: network
+description: Kernel network fault diagnosis SOP (TCP/UDP/netfilter/driver)
+fault_kinds: [oops, generic]
+
+steps:
+  - "Identify the network subsystem: tcp/udp/netfilter/driver/bonding/veth"
+  - "Extract call trace: locate the crashing net function"
+  - "Check for socket reference count issues (use-after-free patterns)"
+  - "Look for NAPI/GRO budget exhaustion under high packet rate"
+  - "Check for netfilter conntrack table overflow (nf_conntrack: table full)"
+  - "Search CVEs related to the identified network function"
+  - "Look for syzbot reports with matching call trace"
+  - "Check OLK-specific network patches that may have introduced regression"
+  - "Verify driver version and firmware; check ethtool -k output"
+  - "Propose fix: kernel patch / driver update / netfilter tuning"
+
+hypotheses_template: |
+  For network fault in {net_function}:
+  1. Socket use-after-free due to premature skb/socket release
+  2. Race condition between socket teardown and packet processing
+  3. Netfilter/conntrack exhaustion causing packet drops and kernel fault
+  4. Network driver bug triggered by specific offload or feature combination
+
+report_sections:
+  - executive_summary
+  - network_fault_details
+  - call_trace_analysis
+  - root_cause_analysis
+  - remediation
+  - references

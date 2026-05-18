@@ -1,0 +1,28 @@
+name: deadlock
+description: Kernel deadlock / lockdep circular dependency diagnosis SOP
+fault_kinds: [lockdep]
+
+steps:
+  - "Parse lockdep report: identify the lock classes involved in the cycle"
+  - "Extract the dependency chain: A → B → C → A"
+  - "Identify the code paths holding each lock"
+  - "Check if this is a known lockdep false positive (same class, different instances)"
+  - "Search kernel commits fixing lockdep issues in the same subsystem"
+  - "Check for lock ordering documentation in the affected subsystem"
+  - "Verify if CONFIG_LOCKDEP is enabled and if prove_locking=1 is set"
+  - "Reproduce with lockdep enabled to confirm the cycle"
+  - "Propose fix: reorder lock acquisition / add nested annotation / split lock"
+
+hypotheses_template: |
+  For lockdep cycle involving {lock_classes}:
+  1. True deadlock: two code paths acquire same locks in opposite order
+  2. False positive: same lock class but different instances (e.g. nested spinlocks)
+  3. Missing lock annotation (lockdep_set_subclass / nesting)
+
+report_sections:
+  - executive_summary
+  - lockdep_chain
+  - lock_analysis
+  - root_cause_analysis
+  - remediation
+  - references

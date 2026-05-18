@@ -23,6 +23,11 @@ def cli(debug: bool) -> None:
         logging.getLogger().setLevel(logging.DEBUG)
 
 
+# Register sub-groups
+from cli.feedback import feedback_group
+cli.add_command(feedback_group)
+
+
 # ── search subcommand ─────────────────────────────────────────────────────────
 
 

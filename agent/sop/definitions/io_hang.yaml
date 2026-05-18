@@ -1,0 +1,29 @@
+name: io_hang
+description: I/O hang / block device stall diagnosis SOP
+fault_kinds: [softlockup, generic]
+
+steps:
+  - "Identify hung task: check 'INFO: task X blocked for more than Ns' in dmesg"
+  - "Extract the blocking call: D-state task, I/O wait in wait_for_completion"
+  - "Check device queue status: lsblk, /sys/block/*/queue/scheduler"
+  - "Look for storage driver errors: SCSI/NVMe error recovery in dmesg"
+  - "Check for filesystem journal hang (ext4/xfs journal transactions stalled)"
+  - "Verify block device timeout settings (kernel.hung_task_timeout_secs)"
+  - "Search commits for I/O hang fixes in block/ or drivers/scsi/ or drivers/nvme/"
+  - "Check for known firmware bugs or storage controller issues"
+  - "Propose fix: driver update / timeout tuning / hardware replacement"
+
+hypotheses_template: |
+  For I/O hang involving device {device}:
+  1. Storage device firmware timeout causing error recovery loop
+  2. Filesystem journal stuck waiting for device write completion
+  3. Block layer request queue starvation under heavy I/O load
+  4. SCSI/NVMe command timeout with misconfigured retry logic
+
+report_sections:
+  - executive_summary
+  - hung_task_details
+  - io_analysis
+  - root_cause_analysis
+  - remediation
+  - references

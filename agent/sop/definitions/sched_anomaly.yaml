@@ -1,0 +1,30 @@
+name: sched_anomaly
+description: Scheduler anomaly diagnosis SOP (latency spikes, starvation, migration)
+fault_kinds: [generic, softlockup]
+
+steps:
+  - "Collect scheduler stats: /proc/schedstat, /proc/sched_debug"
+  - "Identify symptom: latency spike / task starvation / excessive migration"
+  - "Check runqueue depths per CPU: look for CPU imbalance"
+  - "Verify CFS bandwidth throttling: /proc/sys/kernel/sched_cfs_bandwidth_slice_us"
+  - "Check NUMA balancing: numastat, /proc/sys/kernel/numa_balancing"
+  - "Look for RT/DL tasks monopolizing CPU time"
+  - "Search kernel commits for scheduler fixes in the affected version"
+  - "Check isolation configuration: nohz_full, isolcpus, rcu_nocbs"
+  - "Profile with perf sched: latency/timehist for task wakeup analysis"
+  - "Propose fix: scheduler tuning / cgroup config / kernel patch"
+
+hypotheses_template: |
+  For scheduler anomaly (symptom: {symptom}):
+  1. CFS bandwidth throttle causing periodic latency spikes for cgroup tasks
+  2. NUMA balancing causing excessive memory migration and cache thrashing
+  3. RT task monopolization starving normal-priority workloads
+  4. CPU hotplug event causing runqueue rebalance storm
+
+report_sections:
+  - executive_summary
+  - scheduler_state
+  - anomaly_analysis
+  - root_cause_analysis
+  - remediation
+  - references

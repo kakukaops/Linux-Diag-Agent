@@ -1,0 +1,35 @@
+name: lockup
+description: CPU lockup / RCU stall diagnosis SOP
+fault_kinds: [softlockup, hardlockup, rcu_stall]
+
+steps:
+  - "Identify lockup type: soft lockup / NMI hard lockup / RCU stall"
+  - "Note affected CPU(s) and stuck task/thread name"
+  - "Examine call trace: identify the function where the CPU is stuck"
+  - "Check for spinlock contention or interrupt-disabled section"
+  - "Look for RCU read-side critical sections holding too long"
+  - "Search kernel commits fixing lockups in the stuck function's subsystem"
+  - "Check watchdog_thresh and kernel.hung_task_timeout_secs tunable values"
+  - "Correlate with high system load, NUMA imbalance, or IRQ storms"
+  - "Propose fix: kernel update / config tune / workload reduction"
+
+hypotheses_template: |
+  For {lockup_type} on CPU#{cpu}:
+  1. Spinlock held for too long under interrupt disabled
+  2. RCU stall due to long read-side critical section in {subsystem}
+  3. Preemption disabled while waiting for slow I/O or memory allocation
+  4. High interrupt rate causing CPU to never return to scheduler
+
+key_metrics:
+  - affected_cpu
+  - stuck_task
+  - stuck_duration_seconds
+  - watchdog_thresh
+
+report_sections:
+  - executive_summary
+  - lockup_details
+  - call_trace_analysis
+  - root_cause_analysis
+  - remediation
+  - references

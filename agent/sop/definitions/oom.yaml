@@ -1,0 +1,35 @@
+name: oom
+description: OOM (Out of Memory) kill diagnosis SOP
+fault_kinds: [oom]
+
+steps:
+  - "Parse OOM kill log: identify killed process, PID, oom_score, rss/anon usage"
+  - "Check cgroup memory limits and current usage at time of OOM"
+  - "Examine /proc/meminfo and zone reclaim statistics in the log"
+  - "Identify whether OOM was triggered by zone watermark or cgroup limit"
+  - "Check for memory leaks: compare process RSS growth over time"
+  - "Search kernel commits for OOM fixes in mm/ subsystem for this kernel version"
+  - "Check if vm.overcommit_memory and vm.overcommit_ratio are appropriate"
+  - "Look for shmem / tmpfs leaks or large anonymous mappings"
+  - "Propose remediation: tune limits / fix leak / upgrade kernel"
+
+hypotheses_template: |
+  For OOM kill of process '{comm}' with score {score}:
+  1. Application memory leak causing gradual exhaustion
+  2. Cgroup memory limit too restrictive for workload
+  3. Kernel memory accounting bug (slab/vmalloc leak)
+  4. Zone fragmentation preventing large contiguous allocation
+
+key_metrics:
+  - oom_score
+  - anon_rss_mb
+  - cgroup_limit_mb
+  - zone_free_pages
+
+report_sections:
+  - executive_summary
+  - oom_event_details
+  - memory_usage_analysis
+  - root_cause_analysis
+  - remediation
+  - references

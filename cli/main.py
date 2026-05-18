@@ -114,6 +114,45 @@ def search_cmd(
         click.echo()
 
 
+# ── diagnose subcommand ───────────────────────────────────────────────────────
+
+
+@cli.command("diagnose")
+@click.argument("input_path_or_text")
+@click.option("--output", "-o", default=None, help="Write report to this file path.")
+@click.option("--format", "fmt", default="md", type=click.Choice(["md", "json"]),
+              show_default=True, help="Output format.")
+@click.option("--no-llm", is_flag=True, help="Triage only — skip LLM hypothesis generation.")
+def diagnose_cmd(
+    input_path_or_text: str,
+    output: str | None,
+    fmt: str,
+    no_llm: bool,
+) -> None:
+    """Diagnose a kernel fault from dmesg text, sosreport path, or free-form question."""
+    import pathlib
+    from agent.graph import diagnose
+
+    click.echo("Running diagnosis…", err=True)
+    try:
+        state = diagnose(input_path_or_text)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+    if fmt == "json":
+        import json
+        report = json.dumps(state.get("report_json", {}), indent=2, default=str)
+    else:
+        report = state.get("report_md", "")
+
+    if output:
+        pathlib.Path(output).write_text(report, encoding="utf-8")
+        click.echo(f"Report written to {output}", err=True)
+    else:
+        click.echo(report)
+
+
 # ── version subcommand ────────────────────────────────────────────────────────
 
 

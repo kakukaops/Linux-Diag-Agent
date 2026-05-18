@@ -1,0 +1,36 @@
+name: panic
+description: Kernel panic diagnosis SOP
+fault_kinds: [panic]
+
+steps:
+  - "Extract panic message: identify the triggering condition"
+  - "Parse call trace to find the panic origin function"
+  - "Classify panic type: NULL deref / double-free / VFS / network / driver"
+  - "Check if panic is reproducible or one-time (transient hardware?)"
+  - "Search for known CVEs and kernel bug fixes for the panicking subsystem"
+  - "Look for syzbot crash reports matching the call trace signature"
+  - "Check for recent OLK-specific patches that may have introduced the regression"
+  - "Analyze if panic_on_oops=1 was explicitly set (policy vs. bug)"
+  - "Propose fix: patch / config / kernel version"
+
+hypotheses_template: |
+  For kernel panic "{panic_message}":
+  1. Null pointer dereference due to uninitialized pointer or race condition
+  2. Memory corruption (use-after-free / double-free) detected by KASAN
+  3. Assertion failure in kernel code exposed by specific workload
+  4. Hardware memory error (MCE) triggering kernel panic
+
+key_metrics:
+  - panic_type
+  - panic_cpu
+  - panicking_function
+  - kasan_detected
+
+report_sections:
+  - executive_summary
+  - panic_details
+  - call_trace_analysis
+  - root_cause_analysis
+  - cve_and_patch_references
+  - remediation
+  - references

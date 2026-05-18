@@ -1,0 +1,26 @@
+name: generic
+description: Generic kernel fault diagnosis fallback SOP
+fault_kinds: [generic, oops, bug, warn, lockdep]
+
+steps:
+  - "Identify the fault type from kernel log (BUG/WARNING/Oops/panic)"
+  - "Extract the call trace and identify the top-level kernel function"
+  - "Search for recent commits fixing similar issues in the subsystem"
+  - "Check bugzilla and syzbot for matching reports"
+  - "Check NVD for relevant CVEs"
+  - "Correlate LKML threads discussing the fault"
+  - "Identify the root cause based on evidence"
+  - "Propose remediation (patch backport / config change / workaround)"
+
+hypotheses_template: |
+  Based on the fault '{fault_summary}', consider:
+  1. Memory corruption or use-after-free in the affected subsystem
+  2. Race condition triggered by concurrent access
+  3. Resource exhaustion or improper cleanup
+
+report_sections:
+  - executive_summary
+  - root_cause_analysis
+  - supporting_evidence
+  - remediation
+  - references

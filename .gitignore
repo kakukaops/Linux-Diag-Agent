@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+eggs/
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
+.venv/
+venv/
+env/
+ENV/
+.env
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.hypothesis/
+cover/
+*.cover
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyre/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Secrets — NEVER commit
+.env
+.env.*
+*.pem
+*.key
+secrets/
+credentials/
+
+# Data directory (large files, not in VCS)
+data/raw/
+data/mbox/
+data/syzbot/
+data/git/
+data/sosreport/
+data/zenodo/
+# Keep structure markers
+!data/logs/.gitkeep
+!data/metrics/.gitkeep
+!data/traces/.gitkeep
+
+# Docker
+.docker/
+
+# Alembic runtime
+storage/pg/migrations/versions/__pycache__/
+
+# Logs
+*.log
+*.jsonl
+logs/
+
+# OS
+Thumbs.db

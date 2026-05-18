@@ -1,0 +1,147 @@
+# Linux-Diag-Agent — default configuration
+# Override with configs/local.yaml (gitignored) or environment variables.
+# Env format: DIAG_AGENT__<SECTION>__<KEY> (double-underscore separator).
+
+app:
+  name: linux-diag-agent
+  env: development                    # development | production
+  data_dir: data                      # ADR-007: relative to repo root; override with abs path
+
+# ── LLM Provider (M1) ────────────────────────────────────────────────────
+llm:
+  chat:
+    backend: claude_code              # claude_code | anthropic | openai_compat | vllm | ollama
+    adapter: subprocess               # subprocess | agent_sdk (切 6/15 后改)
+    model: claude-sonnet-4-6
+    rate_limit:
+      window_seconds: 18000           # 5h Pro window
+      max_messages: 40                # Pro = 45, 留 5 buffer
+    concurrency: 4
+    retry:
+      max_attempts: 3
+      backoff_initial: 2.0
+      backoff_max: 60.0
+    self_consistency_k: 1             # K=1 默认；评测可改为 3
+    timeout_seconds: 120
+
+  navigator:
+    backend: claude_code
+    adapter: subprocess
+    model: claude-haiku-4-5-20251001  # 便宜，频繁调用
+    rate_limit:
+      window_seconds: 18000
+      max_messages: 40                # 与 chat 共享 Pro 额度
+    concurrency: 4
+    retry:
+      max_attempts: 3
+      backoff_initial: 2.0
+      backoff_max: 60.0
+    timeout_seconds: 60
+
+  cache:
+    enabled: true
+    ttl_days: 30
+    bypass_when_metadata_has:
+      - eval
+      - force_fresh
+
+  # Provider-specific endpoints (used when backend != claude_code/anthropic)
+  endpoints:
+    openai_compat: ""                 # e.g. https://api.deepseek.com/v1
+    vllm: http://localhost:8000/v1
+    ollama: http://localhost:11434/v1
+    anthropic: https://api.anthropic.com
+
+# ── Database (M2) ────────────────────────────────────────────────────────
+database:
+  postgres:
+    dsn: postgresql+psycopg://diag:diag_dev@localhost:5432/diag_agent
+    pool_size: 10
+    max_overflow: 20
+    echo: false                       # true = log all SQL (dev only)
+
+  neo4j:
+    uri: bolt://localhost:7687
+    user: neo4j
+    password: diag_dev
+    database: neo4j
+
+# ── CodeGraph MCP Client (M4, ADR-008/012) ───────────────────────────────
+codegraph:
+  endpoint: http://localhost:8080/mcp  # codesearch MCP streamable-HTTP
+  timeout_seconds: 30
+  repo_map:
+    # kernel_version → codesearch repo name (ADR-009)
+    "v6.6": olk-kernel-v6.6
+    "OLK-6.6": olk-kernel-v6.6
+    "v5.10": olk-kernel-v5.10
+    "OLK-5.10": olk-kernel-v5.10
+
+# ── Ingestion (M3) ────────────────────────────────────────────────────────
+ingestion:
+  lkml:
+    base_url: https://lore.kernel.org
+    lists:
+      - linux-kernel
+      - stable
+    lookback_days: 730               # ADR-010: 2-year bootstrap
+    batch_size: 200
+
+  bugzilla:
+    url: https://bugzilla.kernel.org
+    lookback_days: 730
+    batch_size: 100
+
+  syzbot:
+    url: https://syzkaller.appspot.com
+    lookback_days: 730
+    batch_size: 50
+
+  nvd:
+    feed_url: https://services.nvd.nist.gov/rest/json/cves/2.0
+    lookback_days: 730
+    batch_size: 2000
+
+  zenodo:
+    doi_list:
+      - "10.5281/zenodo.11087178"    # kernel bug dataset (placeholder)
+    refresh_days: 90
+
+  kernel_commit:
+    olk_repos:
+      - name: OLK-6.6
+        remote: https://atomgit.com/openeuler/kernel.git
+        branch: OLK-6.6
+        local_path: ""               # default: data/git/olk-kernel-v6.6
+      - name: OLK-5.10
+        remote: https://atomgit.com/openeuler/kernel.git
+        branch: OLK-5.10
+        local_path: ""
+    mainline_repo:
+      remote: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+      local_path: ""                 # default: data/git/linux-stable
+      fetch_tags: true
+
+# ── Retrieval (M5) ────────────────────────────────────────────────────────
+retrieval:
+  top_k: 10
+  routes:
+    - code
+    - docs
+    - lkml
+    - bug
+    - syzbot
+    - commit
+    - cve
+  rerank:
+    enabled: true
+    min_candidates: 10              # 候选 > 10 才触发重排
+
+# ── Observability (ADR-016) ───────────────────────────────────────────────
+observability:
+  log_dir: data/logs
+  metrics_dir: data/metrics
+  traces_dir: data/traces
+  log_level: INFO
+  metrics_flush_seconds: 60
+  log_retention_days: 30

@@ -271,6 +271,22 @@ class LinkCommitMessage(Base):
     )
 
 
+class LinkCommitCve(Base):
+    """commit ↔ CVE relationship (NVD reference URLs + trailer extraction, WBS 3.3)."""
+    __tablename__ = "link_commit_cve"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    commit_hash = Column(Text, ForeignKey("kernel_commit.hash"), nullable=False, index=True)
+    cve_id = Column(Text, ForeignKey("cve.cve_id"), nullable=False, index=True)
+    link_type = Column(Text, nullable=False)         # 'nvd_ref' | 'trailer'
+    confidence = Column(Numeric(3, 2), default=1.0)
+    source = Column(Text)                            # 'nvd' | 'trailer'
+
+    __table_args__ = (
+        UniqueConstraint("commit_hash", "cve_id", "link_type", name="uq_lcc"),
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # System tables
 # ═══════════════════════════════════════════════════════════════════════════

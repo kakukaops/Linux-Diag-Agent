@@ -61,7 +61,6 @@ data/git/
 data/sosreport/
 data/zenodo/
 # Keep structure markers
-!data/logs/.gitkeep
 !data/metrics/.gitkeep
 !data/traces/.gitkeep
 

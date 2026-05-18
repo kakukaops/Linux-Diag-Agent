@@ -63,18 +63,26 @@ def build_graph() -> Any:
     graph.add_edge("bind_claims", "generate_report")
     graph.add_edge("generate_report", END)
 
-    return graph.compile()
+    # Wire PG checkpointer if available (WBS 7.12)
+    try:
+        from agent.checkpointer import get_checkpointer
+        checkpointer = get_checkpointer()
+        return graph.compile(checkpointer=checkpointer)
+    except Exception:
+        return graph.compile()
 
 
 # ── Convenience runner ────────────────────────────────────────────────────────
 
 
-def diagnose(raw_input: str) -> dict[str, Any]:
+def diagnose(raw_input: str, *, thread_id: str | None = None) -> dict[str, Any]:
     """Run the full diagnosis pipeline on raw_input. Returns final state."""
+    import uuid
     app = build_graph()
+    config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}}
     initial_state = {
         "raw_input": raw_input,
         "messages": [],
         "iteration": 0,
     }
-    return app.invoke(initial_state)
+    return app.invoke(initial_state, config)

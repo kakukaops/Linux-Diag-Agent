@@ -25,7 +25,11 @@ def cli(debug: bool) -> None:
 
 # Register sub-groups
 from cli.feedback import feedback_group
+from cli.observe import logs_group, metrics_group, trace_group
 cli.add_command(feedback_group)
+cli.add_command(logs_group)
+cli.add_command(metrics_group)
+cli.add_command(trace_group)
 
 
 # ── search subcommand ─────────────────────────────────────────────────────────

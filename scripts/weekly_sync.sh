@@ -28,6 +28,19 @@ for arg in "$@"; do
 done
 
 mkdir -p "$LOG_DIR"
+
+# ── Lock file: prevent concurrent runs ───────────────────────────────────────
+LOCK_FILE="/tmp/linux-diag-agent-sync.lock"
+if ! flock -n "$LOCK_FILE" true 2>/dev/null; then
+  echo "[$(date -u +%H:%M:%S)] ERROR: Another weekly_sync.sh is already running (lock: $LOCK_FILE). Exiting." | tee -a "$LOG_FILE"
+  exit 1
+fi
+exec {LOCK_FD}>"$LOCK_FILE"
+if ! flock -n "$LOCK_FD"; then
+  echo "[$(date -u +%H:%M:%S)] ERROR: Could not acquire lock. Exiting." | tee -a "$LOG_FILE"
+  exit 1
+fi
+trap 'flock -u $LOCK_FD' EXIT
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 ts() { date "+%Y-%m-%dT%H:%M:%SZ"; }

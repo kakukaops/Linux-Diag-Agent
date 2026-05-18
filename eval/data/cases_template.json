@@ -1,0 +1,47 @@
+[
+  {
+    "id": "oom-001",
+    "category": "oom",
+    "kernel_version": "OLK-6.6",
+    "question": "v6.6 OLK kernel: Out of memory kill of process 'java' with oom_score 999. Normal zone has 0 free pages. cgroup limit 4GB. How to diagnose?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "notes": "Classic OOM triggered by cgroup limit hit with zone exhaustion"
+  },
+  {
+    "id": "softlockup-001",
+    "category": "lockup",
+    "kernel_version": "OLK-5.10",
+    "question": "Soft lockup on CPU#2 stuck for 23s in kworker/2:1H. Call trace shows __schedule. OLK-5.10 kernel.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "notes": "Typical scheduler soft lockup under heavy I/O load"
+  },
+  {
+    "id": "kasan-001",
+    "category": "oops",
+    "kernel_version": "OLK-6.6",
+    "question": "KASAN: use-after-free in tcp_v4_do_rcv+0x123/0x456. OLK-6.6. Read of size 8.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "notes": "TCP use-after-free, classic memory safety bug"
+  },
+  {
+    "id": "panic-001",
+    "category": "panic",
+    "kernel_version": "OLK-5.10",
+    "question": "Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(254,0). OLK-5.10.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "notes": "Boot failure: missing root device driver or initramfs issue"
+  },
+  {
+    "id": "generic-001",
+    "category": "generic",
+    "kernel_version": "OLK-6.6",
+    "question": "How to diagnose order=4 normal zone OOM on OLK-6.6?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "notes": "High-order allocation failure under memory fragmentation"
+  }
+]

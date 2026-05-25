@@ -16,7 +16,6 @@ import logging
 import re
 from typing import Any
 
-from agent.diagnosis.state import DiagnosisState, Hypothesis, Claim
 from agent.sop.registry import get_sop
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ _K = 3  # self-consistency samples
 # ── Node implementations ──────────────────────────────────────────────────────
 
 
-def load_sop(state: DiagnosisState) -> DiagnosisState:
+def load_sop(state: dict) -> dict:
     """Load SOP yaml steps for the detected fault kind."""
     sop_name = state.get("sop_name", "generic")
     try:
@@ -40,7 +39,7 @@ def load_sop(state: DiagnosisState) -> DiagnosisState:
     return {**state, "sop_steps": steps, "current_step": 0}
 
 
-def generate_hypotheses(state: DiagnosisState) -> DiagnosisState:
+def generate_hypotheses(state: dict) -> dict:
     """LLM generates hypotheses for the fault based on evidence."""
     evidence = state.get("evidence", [])
     fault_summary = state.get("fault_summary", "")
@@ -81,7 +80,7 @@ def generate_hypotheses(state: DiagnosisState) -> DiagnosisState:
     return {**state, "hypotheses": hypotheses, "active_hypothesis": active}
 
 
-def verify_hypothesis(state: DiagnosisState) -> DiagnosisState:
+def verify_hypothesis(state: dict) -> dict:
     """Verify the active hypothesis against evidence; update status."""
     hyp = state.get("active_hypothesis")
     if not hyp:
@@ -113,7 +112,7 @@ def verify_hypothesis(state: DiagnosisState) -> DiagnosisState:
     return {**state, "active_hypothesis": hyp, "hypotheses": updated_hyps}
 
 
-def self_consistency(state: DiagnosisState) -> DiagnosisState:
+def self_consistency(state: dict) -> dict:
     """Run K=3 LLM analyses and pick majority-vote winner (WBS 7.8)."""
     fault_summary = state.get("fault_summary", "")
     hyp = state.get("active_hypothesis")
@@ -151,12 +150,22 @@ def self_consistency(state: DiagnosisState) -> DiagnosisState:
     return {**state, "candidate_analyses": analyses, "final_analysis": winner}
 
 
-def bind_claims(state: DiagnosisState) -> DiagnosisState:
-    """Extract claims from final analysis and verify evidence references (WBS 7.9)."""
-    analysis = state.get("final_analysis", "")
+def bind_claims(state: dict) -> dict:
+    """Extract claims from ReAct final answer and verify evidence references (WBS 7.9).
+
+    When the ReAct verdict is insufficient_evidence, skips LLM claim extraction
+    and returns an empty claims list — generate_report handles the special branch.
+    """
+    react_verdict = state.get("react_verdict", "diagnosed")
+
+    # insufficient_evidence / max_iter_reached / budget_exhausted:
+    # no verifiable claims can be bound — pass through without LLM call.
+    if react_verdict != "diagnosed":
+        return {**state, "claims": []}
+
+    analysis = state.get("final_analysis", "") or state.get("react_final_answer", "")
     evidence = state.get("evidence", [])
 
-    # Build evidence lookup
     evidence_by_hash: dict[str, dict] = {
         e["commit_hash"]: e for e in evidence if e.get("commit_hash")
     }
@@ -193,7 +202,7 @@ def bind_claims(state: DiagnosisState) -> DiagnosisState:
     return {**state, "claims": claims}
 
 
-def generate_report(state: DiagnosisState) -> DiagnosisState:
+def generate_report(state: dict) -> dict:
     """Render the final Markdown and JSON diagnosis report (WBS 7.10)."""
     from agent.report.renderer import render_md, render_json
 
@@ -211,7 +220,7 @@ def _llm_call(prompt: str, temperature: float = 0.0) -> str:
     from configs.config import get_config
 
     cfg = get_config()
-    provider = get_provider(cfg.llm.chat.provider)
+    provider = get_provider(cfg.llm.chat.backend)
     req = ChatRequest(
         messages=[Message(role="user", content=prompt)],
         model=cfg.llm.chat.model,

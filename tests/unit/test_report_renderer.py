@@ -31,10 +31,11 @@ def test_render_md_contains_fault():
     assert "OLK-6.6" in md
 
 
-def test_render_md_contains_hypothesis():
+def test_render_md_contains_claim():
+    # v2 renderer: hypotheses section removed (ReAct produces final_answer, not hypothesis list)
     md = render_md(SAMPLE_STATE)
-    assert "h1" in md
-    assert "Memory leak" in md
+    assert "anon-rss" in md       # claim text
+    assert "abc1234" in md        # evidence ref
 
 
 def test_render_md_contains_evidence_table():
@@ -44,9 +45,10 @@ def test_render_md_contains_evidence_table():
 
 def test_render_json_schema():
     report = render_json(SAMPLE_STATE)
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert report["fault"]["kind"] == "oom"
     assert "generated_at" in report
+    assert "react" in report                  # v2: react trace block always present
     assert len(report["top_evidence"]) == 1
     assert report["top_evidence"][0]["commit_hash"] == "abc1234"
 

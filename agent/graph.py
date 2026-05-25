@@ -1,12 +1,12 @@
-"""LangGraph diagnosis agent graph (WBS 7.1/7.2).
+"""LangGraph diagnosis agent graph (v2 T-005).
 
-Two-phase pipeline:
-  Triage phase: parse_input → extract_events → classify_fault → retrieve
-  Diagnosis phase: load_sop → generate_hypotheses → verify_hypothesis →
-                   self_consistency → bind_claims → generate_report
+Three-phase Hybrid Agent (ADR-019):
+  Triage  (deterministic): parse_input → extract_events → detect_taint_and_hw_signals
+                           → classify_fault_and_route → retrieve
+  Investigation (ReAct):   react_investigation   (M22 loop replacing v1 load_sop..self_consistency)
+  Report  (deterministic): bind_claims → generate_report
 
-Checkpointing falls to PG via SqliteSaver as an interim; PG checkpointer
-is wired in WBS 7.12.
+Checkpointing uses the PG checkpointer (WBS 7.12).
 """
 
 from __future__ import annotations
@@ -15,51 +15,43 @@ from typing import Any
 
 from langgraph.graph import END, StateGraph
 
-from agent.triage.nodes import parse_input, extract_events, classify_fault, retrieve
-from agent.diagnosis.nodes import (
-    load_sop,
-    generate_hypotheses,
-    verify_hypothesis,
-    self_consistency,
-    bind_claims,
-    generate_report,
+from agent.triage.nodes import (
+    parse_input,
+    extract_events,
+    detect_taint_and_hw_signals,
+    classify_fault_and_route,
+    retrieve,
 )
-
-
-def _merge_states(a: dict, b: dict) -> dict:
-    """Simple merge: b overrides a."""
-    return {**a, **b}
+from agent.react.nodes import react_investigation
+from agent.diagnosis.nodes import bind_claims, generate_report
 
 
 def build_graph() -> Any:
-    """Build and compile the full triage + diagnosis StateGraph."""
-    # Combined state is the union of TriageState and DiagnosisState
+    """Build and compile the full triage + ReAct + report StateGraph."""
     graph = StateGraph(dict)
 
-    # ── Triage phase ─────────────────────────────────────────────────────────
+    # ── Triage phase (deterministic) ─────────────────────────────────────────
     graph.add_node("parse_input", parse_input)
     graph.add_node("extract_events", extract_events)
-    graph.add_node("classify_fault", classify_fault)
+    graph.add_node("detect_taint_and_hw_signals", detect_taint_and_hw_signals)
+    graph.add_node("classify_fault_and_route", classify_fault_and_route)
     graph.add_node("retrieve", retrieve)
 
-    # ── Diagnosis phase ───────────────────────────────────────────────────────
-    graph.add_node("load_sop", load_sop)
-    graph.add_node("generate_hypotheses", generate_hypotheses)
-    graph.add_node("verify_hypothesis", verify_hypothesis)
-    graph.add_node("self_consistency", self_consistency)
+    # ── Investigation phase (ReAct — M22) ────────────────────────────────────
+    graph.add_node("react_investigation", react_investigation)
+
+    # ── Report phase (deterministic) ─────────────────────────────────────────
     graph.add_node("bind_claims", bind_claims)
     graph.add_node("generate_report", generate_report)
 
     # ── Edges ────────────────────────────────────────────────────────────────
     graph.set_entry_point("parse_input")
     graph.add_edge("parse_input", "extract_events")
-    graph.add_edge("extract_events", "classify_fault")
-    graph.add_edge("classify_fault", "retrieve")
-    graph.add_edge("retrieve", "load_sop")
-    graph.add_edge("load_sop", "generate_hypotheses")
-    graph.add_edge("generate_hypotheses", "verify_hypothesis")
-    graph.add_edge("verify_hypothesis", "self_consistency")
-    graph.add_edge("self_consistency", "bind_claims")
+    graph.add_edge("extract_events", "detect_taint_and_hw_signals")
+    graph.add_edge("detect_taint_and_hw_signals", "classify_fault_and_route")
+    graph.add_edge("classify_fault_and_route", "retrieve")
+    graph.add_edge("retrieve", "react_investigation")
+    graph.add_edge("react_investigation", "bind_claims")
     graph.add_edge("bind_claims", "generate_report")
     graph.add_edge("generate_report", END)
 

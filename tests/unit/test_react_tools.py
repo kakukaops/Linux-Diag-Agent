@@ -1,0 +1,246 @@
+"""Unit tests for M22 ReAct tool registration (agent/react/tools/).
+
+All tests use mocks / stubs — no DB, no network, no CodeGraph.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from agent.react.tools.registry import build_registry
+
+
+# ── build_registry ────────────────────────────────────────────────────────────
+
+def test_build_registry_has_all_categories():
+    reg = build_registry()
+    names = {t.name for t in reg.for_route("kernel")}
+    # Category A
+    assert {"search_commits", "search_lkml", "search_bugs", "search_syzbot",
+            "search_cve", "search_code", "lookup_symbol"} <= names
+    # Category D
+    assert {"get_commit_detail", "get_commit_diff", "check_backport_status",
+            "get_regression_fixes", "get_function_source", "get_call_graph"} <= names
+    # Category B
+    assert {"parse_dmesg", "parse_sosreport", "extract_call_trace"} <= names
+
+
+def test_kernel_route_does_not_expose_change_only_tools():
+    """search_lkml/search_bugs should not appear in hardware route."""
+    reg = build_registry()
+    hw_names = {t.name for t in reg.for_route("hardware")}
+    assert "search_lkml" not in hw_names
+    assert "search_bugs" not in hw_names
+    # But search_commits and search_cve should be there
+    assert "search_commits" in hw_names
+    assert "search_cve" in hw_names
+
+
+def test_hardware_route_has_log_tools():
+    reg = build_registry()
+    hw_names = {t.name for t in reg.for_route("hardware")}
+    assert "parse_dmesg" in hw_names
+
+
+def test_change_route_has_commit_tools_not_kernel_only():
+    reg = build_registry()
+    change_names = {t.name for t in reg.for_route("change")}
+    assert "get_commit_detail" in change_names
+    assert "get_commit_diff" in change_names
+    # check_backport_status is kernel-only
+    assert "check_backport_status" not in change_names
+
+
+def test_unknown_route_has_all_tools():
+    reg = build_registry()
+    unknown_names = {t.name for t in reg.for_route("unknown")}
+    kernel_names = {t.name for t in reg.for_route("kernel")}
+    # unknown should be a superset of kernel
+    assert kernel_names <= unknown_names
+
+
+def test_schemas_are_valid_tool_schemas():
+    reg = build_registry()
+    schemas = reg.schemas("kernel")
+    assert len(schemas) > 0
+    for s in schemas:
+        assert s.type == "function"
+        assert s.function.name
+        assert s.function.description
+
+
+# ── retrieval tools (mocked DB) ───────────────────────────────────────────────
+
+def _fake_evidence(title="fix: mm oom", score=0.9, commit_hash="abc123def456"):
+    from retrieval.schema import Evidence, RouteTag
+    return Evidence(route=RouteTag.commit, score=score, title=title,
+                    commit_hash=commit_hash, body="Body text")
+
+
+def test_search_commits_formats_results():
+    from agent.react.tools.retrieval_tools import _search_commits
+    with patch("retrieval.recall.commit.recall", return_value=[_fake_evidence()]):
+        result = _search_commits(keywords="oom cgroup")
+    assert "fix: mm oom" in result
+    assert "abc123" in result
+    assert "0.90" in result
+
+
+def test_search_commits_empty_returns_no_results():
+    from agent.react.tools.retrieval_tools import _search_commits
+    with patch("retrieval.recall.commit.recall", return_value=[]):
+        result = _search_commits(keywords="nonexistent xyz")
+    assert "No results" in result
+
+
+def test_search_cve_by_id():
+    from agent.react.tools.retrieval_tools import _search_cve
+    from retrieval.schema import Evidence, RouteTag
+    fake = Evidence(route=RouteTag.cve, score=1.0, title="CVE-2024-50022",
+                    cve_id="CVE-2024-50022", body="memory corruption in mm/")
+    with patch("retrieval.recall.cve.recall", return_value=[fake]):
+        result = _search_cve(cve_id="CVE-2024-50022")
+    assert "CVE-2024-50022" in result
+
+
+def test_search_code_codegraph_unavailable():
+    from agent.react.tools.retrieval_tools import _search_code
+    from clients.codegraph.client import CodeGraphError
+    with patch("clients.codegraph.client.get_codegraph_client") as mock_get:
+        mock_get.return_value.search_code.side_effect = CodeGraphError("timeout")
+        result = _search_code(query="oom_kill_process")
+    assert "unavailable" in result.lower()
+
+
+# ── log tools ─────────────────────────────────────────────────────────────────
+
+_OOM_DMESG = (
+    "[ 123.456] Out of memory: Kill process 1234 (python3) score 900 or sacrifice child\n"
+    "[ 123.457] Killed process 1234 (python3) total-vm:2048kB, anon-rss:1024kB\n"
+)
+
+
+def test_parse_dmesg_detects_oom():
+    from agent.react.tools.log_tools import _parse_dmesg
+    result = _parse_dmesg(text=_OOM_DMESG)
+    assert "OOM" in result.upper() or "out of memory" in result.lower()
+
+
+def test_parse_dmesg_no_events():
+    from agent.react.tools.log_tools import _parse_dmesg
+    result = _parse_dmesg(text="nothing happened today\n")
+    assert "No kernel events" in result
+
+
+def test_extract_call_trace():
+    from agent.react.tools.log_tools import _extract_call_trace
+    text = (
+        "Call Trace:\n"
+        " [<ffffffff8012abcd>] oom_kill_process+0x1a/0x30\n"
+        " [<ffffffff8011aaaa>] out_of_memory+0x200/0x400\n"
+    )
+    result = _extract_call_trace(text=text)
+    assert "oom_kill_process" in result
+    assert "out_of_memory" in result
+
+
+def test_extract_call_trace_no_trace():
+    from agent.react.tools.log_tools import _extract_call_trace
+    result = _extract_call_trace(text="no trace here")
+    assert "No call trace" in result
+
+
+def test_parse_sosreport_bad_path():
+    from agent.react.tools.log_tools import _parse_sosreport
+    # sosreport parser degrades gracefully — returns empty summary or error text
+    result = _parse_sosreport(path="/nonexistent/path/sos.tar.xz")
+    # must at least return a string with recognizable fields
+    assert isinstance(result, str) and len(result) > 0
+
+
+# ── code tools (mocked) ───────────────────────────────────────────────────────
+
+def test_get_commit_detail_not_found():
+    from agent.react.tools.code_tools import _get_commit_detail
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.execute.return_value.fetchone.return_value = None
+        mock_eng.return_value.connect.return_value = mock_conn
+        result = _get_commit_detail(commit_hash="deadbeef1234")
+    assert "not found" in result
+
+
+def test_get_commit_detail_found():
+    from agent.react.tools.code_tools import _get_commit_detail
+    FakeRow = MagicMock()
+    FakeRow.hash = "deadbeef1234abcd"
+    FakeRow.subject = "mm: fix oom score"
+    FakeRow.body = "This patch fixes..."
+    FakeRow.author_name = "Linus Torvalds"
+    FakeRow.commit_date = "2024-01-15"
+    FakeRow.olk_inclusion_type = "mainline"
+    FakeRow.upstream_commit = "upstream123"
+    FakeRow.affected_versions = ["OLK-6.6"]
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.execute.return_value.fetchone.return_value = FakeRow
+        mock_eng.return_value.connect.return_value = mock_conn
+        result = _get_commit_detail(commit_hash="deadbeef1234")
+    assert "mm: fix oom score" in result
+    assert "Linus Torvalds" in result
+
+
+def test_check_backport_status_found():
+    from agent.react.tools.code_tools import _check_backport_status
+    with patch("graph.queries.check_backport_status",
+               return_value={
+                   "backported": True,
+                   "olk_commit_hash": "abc123",
+                   "olk_commit_subject": "mm: fix oom",
+                   "inclusion_type": "mainline",
+               }):
+        result = _check_backport_status(upstream_sha="abc123", olk_version="OLK-6.6")
+    assert "BACKPORTED" in result
+
+
+def test_check_backport_status_not_found():
+    from agent.react.tools.code_tools import _check_backport_status
+    with patch("graph.queries.check_backport_status",
+               return_value={"backported": False, "upstream_sha": "abc123",
+                             "olk_version": "OLK-6.6"}):
+        result = _check_backport_status(upstream_sha="abc123", olk_version="OLK-6.6")
+    assert "NOT backported" in result
+
+
+def test_get_regression_fixes_none():
+    from agent.react.tools.code_tools import _get_regression_fixes
+    with patch("graph.queries.get_regression_fixes",
+               return_value={"commit_hash": "abc", "has_regression_fix": False,
+                             "fixing_commits": []}):
+        result = _get_regression_fixes(commit_hash="abc123")
+    assert "No known regression" in result
+
+
+def test_get_commit_diff_not_found():
+    from agent.react.tools.code_tools import _get_commit_diff
+    with patch("graph.git_diff.get_commit_diff",
+               return_value={"found": False, "error": "commit not found"}):
+        result = _get_commit_diff(commit_hash="abc123")
+    assert "not found" in result.lower() or "Diff not found" in result
+
+
+def test_get_commit_diff_found():
+    from agent.react.tools.code_tools import _get_commit_diff
+    with patch("graph.git_diff.get_commit_diff",
+               return_value={"found": True, "repo": "OLK-6.6",
+                             "diff": "diff --git a/mm/oom.c b/mm/oom.c\n+fix",
+                             "truncated": False}):
+        result = _get_commit_diff(commit_hash="abc123")
+    assert "diff --git" in result
+    assert "OLK-6.6" in result

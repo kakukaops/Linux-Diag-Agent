@@ -1,19 +1,19 @@
-"""LangGraph triage nodes (WBS 7.1).
+"""LangGraph triage nodes (WBS 7.1; v2 T-001 / T-002 / T-006).
 
 Nodes:
-  parse_input    → detect input type (dmesg / sosreport / question)
-  extract_events → run dmesg extractor or sosreport parser
-  classify_fault → pick fault_kind and select SOP
-  retrieve       → fire retrieval engine with parsed query
+  parse_input                 → detect input type (dmesg / sosreport / question)
+  extract_events              → run dmesg extractor or sosreport parser
+  detect_taint_and_hw_signals → scan dmesg for taint flags + hardware signals (ADR-023)
+  classify_fault_and_route    → pick fault_kind, SOP, and the diagnostic route
+  retrieve                    → fire retrieval engine with an LLM-parsed query
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
-
-from agent.triage.state import TriageState
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +29,17 @@ _EVENT_KIND_TO_SOP = {
     "lockdep": "generic",
 }
 
+# User framing that implies "something changed" → the `change` route.
+# Kept tight to avoid over-routing — only explicit upgrade/regression cues.
+_CHANGE_RE = re.compile(
+    r"升级|内核更新|更新内核|换了内核|换内核|昨天还|前几天还|之前(?:都)?正常|"
+    r"\bupgrad|\bupdat\w*\s+\w*\s*kernel|worked\s+(?:fine\s+)?(?:yesterday|before|"
+    r"last\s+\w+)|after\s+(?:the\s+)?(?:update|upgrade)",
+    re.IGNORECASE,
+)
 
-def parse_input(state: TriageState) -> TriageState:
+
+def parse_input(state: dict) -> dict:
     """Detect whether raw_input is a dmesg blob, file path, or free-form question."""
     raw = state.get("raw_input", "")
     p = Path(raw.strip()) if len(raw) < 500 else None
@@ -50,11 +59,16 @@ def parse_input(state: TriageState) -> TriageState:
     return {**state, "input_type": "question"}
 
 
-def extract_events(state: TriageState) -> TriageState:
-    """Extract structured events from dmesg / sosreport input."""
+def extract_events(state: dict) -> dict:
+    """Extract structured events from dmesg / sosreport input.
+
+    Also exposes the raw dmesg text as `dmesg_text` so the next node
+    (detect_taint_and_hw_signals) can scan it for hardware signals.
+    """
     input_type = state.get("input_type", "question")
     raw = state.get("raw_input", "")
     events: list[dict[str, Any]] = []
+    dmesg_text = ""
     kernel_version = state.get("kernel_version")
     olk_version_tag = state.get("olk_version_tag")
     hostname = state.get("hostname")
@@ -66,6 +80,7 @@ def extract_events(state: TriageState) -> TriageState:
                 raw = Path(raw.strip()).read_text(errors="replace")
             except Exception as exc:
                 logger.error("Failed to read dmesg file: %s", exc)
+        dmesg_text = raw
         events = [e.to_dict() for e in _extract(raw)]
 
     elif input_type == "sosreport":
@@ -77,6 +92,7 @@ def extract_events(state: TriageState) -> TriageState:
             olk_version_tag = summary.olk_version_tag or olk_version_tag
             hostname = summary.hostname or hostname
             if summary.dmesg_tail:
+                dmesg_text = summary.dmesg_tail
                 events = [e.to_dict() for e in _extract(summary.dmesg_tail)]
         except Exception as exc:
             logger.error("sosreport parse failed: %s", exc)
@@ -84,14 +100,51 @@ def extract_events(state: TriageState) -> TriageState:
     return {
         **state,
         "kernel_events": events,
+        "dmesg_text": dmesg_text,
         "kernel_version": kernel_version,
         "olk_version_tag": olk_version_tag,
         "hostname": hostname,
     }
 
 
-def classify_fault(state: TriageState) -> TriageState:
-    """Pick fault_kind and sop_name from the extracted events or LLM fallback."""
+def detect_taint_and_hw_signals(state: dict) -> dict:
+    """Scan dmesg for hardware-error / Machine-Check / taint signals (ADR-023, T-001).
+
+    These gate the `hardware` diagnostic route: a hardlockup or panic with a
+    Hardware Error / MCE in dmesg is far more likely a bad-DIMM / firmware
+    problem than a kernel bug, and must not be routed to kernel-commit search.
+    Detection is deliberately conservative — only strong, explicit signals.
+    """
+    from mcp_servers.shared.taint_flags import extract_taint_letters
+
+    text = state.get("dmesg_text") or state.get("raw_input", "")
+    signals: list[str] = []
+    if re.search(r"Hardware Error", text, re.IGNORECASE):
+        signals.append("hardware_error")
+    if re.search(r"\bMachine Check\b", text, re.IGNORECASE) or \
+       re.search(r"^mce:", text, re.IGNORECASE | re.MULTILINE):
+        signals.append("mce")
+    if re.search(r"EDAC.{0,40}(?:Uncorrected|\bUE\b)", text, re.IGNORECASE):
+        signals.append("edac_uncorrected")
+
+    taint = extract_taint_letters(text)
+    if "M" in taint:  # M = machine check exception
+        signals.append("taint_machine_check")
+
+    return {
+        **state,
+        "taint_flags": taint,
+        "hardware_signals": signals,
+        "has_hardware_signal": bool(signals),
+    }
+
+
+def classify_fault_and_route(state: dict) -> dict:
+    """Pick fault_kind, SOP, and the diagnostic route (v2 T-002, replaces classify_fault).
+
+    The route decides which tool subset the Investigation (ReAct) stage exposes.
+    Crucially, hardware signals route AWAY from kernel-commit search (ADR-023).
+    """
     events = state.get("kernel_events", [])
 
     if events:
@@ -106,22 +159,30 @@ def classify_fault(state: TriageState) -> TriageState:
         # No dmesg events — use LLM to classify free-form question
         fault_kind, fault_summary = _llm_classify(state)
 
-    sop_name = _EVENT_KIND_TO_SOP.get(fault_kind, "generic")
+    route = _select_route(state, fault_kind, has_events=bool(events))
+    sop_name = "hardware" if route == "hardware" \
+        else _EVENT_KIND_TO_SOP.get(fault_kind, "generic")
     return {
         **state,
         "fault_kind": fault_kind,
         "fault_summary": fault_summary,
         "sop_name": sop_name,
+        "diagnostic_route": route,
     }
 
 
-def retrieve(state: TriageState) -> TriageState:
-    """Fire the retrieval engine based on fault summary + kernel version."""
+def retrieve(state: dict) -> dict:
+    """Fire the retrieval engine based on fault summary + kernel version.
+
+    T-006: LLM query parsing is enabled (v1 hard-coded use_llm=False, which
+    degraded keyword quality). parse_query falls back to regex on LLM failure,
+    so this is safe under rate-limit / budget exhaustion.
+    """
     from retrieval.query_parser import parse_query
     from retrieval.engine import retrieve as _retrieve
 
     question = state.get("fault_summary") or state.get("raw_input", "")
-    query = parse_query(question, use_llm=False)
+    query = parse_query(question)  # use_llm=True (default); regex fallback on failure
     if state.get("olk_version_tag"):
         query.kernel_version = state["olk_version_tag"]
 
@@ -133,15 +194,39 @@ def retrieve(state: TriageState) -> TriageState:
     }
 
 
+# ── Routing helpers (T-002) ───────────────────────────────────────────────────
+
+
+def _select_route(state: dict, fault_kind: str, *, has_events: bool) -> str:
+    """ADR-023 routing: hardware signals first, then vmcore, change, kernel.
+
+    Returns one of {hardware, kernel+vmcore, change, kernel, unknown}.
+    """
+    if state.get("has_hardware_signal"):
+        return "hardware"
+    if fault_kind in {"panic", "oops"} and state.get("vmcore_path"):
+        return "kernel+vmcore"
+    if _implies_recent_change(state):
+        return "change"
+    if fault_kind == "generic" and not has_events:
+        return "unknown"  # vague free-form question — expose the full toolset
+    return "kernel"
+
+
+def _implies_recent_change(state: dict) -> bool:
+    """Whether the user's framing suggests 'something changed' (→ change route)."""
+    return bool(_CHANGE_RE.search(state.get("raw_input", "")))
+
+
 # ── LLM fallback classifier ───────────────────────────────────────────────────
 
 
-def _llm_classify(state: TriageState) -> tuple[str, str]:
+def _llm_classify(state: dict) -> tuple[str, str]:
     """Use Navigator LLM to classify fault kind from raw question."""
     from llm.provider.base import ChatRequest, Message
     from llm.provider.registry import get_provider
     from configs.config import get_config
-    import json, re
+    import json
 
     cfg = get_config()
     raw = state.get("raw_input", "")
@@ -152,7 +237,7 @@ def _llm_classify(state: TriageState) -> tuple[str, str]:
         f"Input: {raw[:1000]}"
     )
     try:
-        provider = get_provider(cfg.llm.navigator.provider)
+        provider = get_provider(cfg.llm.navigator.backend)
         req = ChatRequest(
             messages=[Message(role="user", content=prompt)],
             model=cfg.llm.navigator.model,

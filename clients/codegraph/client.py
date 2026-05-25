@@ -19,8 +19,10 @@ from configs.config import get_config
 
 logger = logging.getLogger(__name__)
 
-_HEALTH_PATH = "/health"
-_MCP_PATH = "/mcp"
+_MCP_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+}
 
 
 class CodeGraphError(Exception):
@@ -57,10 +59,27 @@ class CodeGraphClient:
     # ── Health check ─────────────────────────────────────────────────────
 
     def health_check(self) -> bool:
-        """Return True if the server responds 200 on /health."""
+        """Return True if the MCP server responds to initialize."""
         try:
-            r = self._client.get(f"{self._base}{_HEALTH_PATH}")
-            return r.status_code == 200
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "health",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "linux-diag-agent", "version": "1.0"},
+                },
+            }
+            r = self._client.post(
+                self._base,
+                json=payload,
+                headers=_MCP_HEADERS,
+            )
+            if r.status_code != 200:
+                return False
+            data = _parse_sse_response(r.text)
+            return data is not None and "result" in data
         except Exception as exc:
             logger.warning("CodeGraph health check failed: %s", exc)
             return False
@@ -69,29 +88,13 @@ class CodeGraphClient:
         """Return a detailed health status dict for observability."""
         import time
         t0 = time.monotonic()
-        try:
-            r = self._client.get(f"{self._base}{_HEALTH_PATH}")
-            latency_ms = round((time.monotonic() - t0) * 1000, 1)
-            healthy = r.status_code == 200
-            detail: dict[str, Any] = {}
-            try:
-                detail = r.json()
-            except Exception:
-                pass
-            return {
-                "healthy": healthy,
-                "status_code": r.status_code,
-                "latency_ms": latency_ms,
-                "endpoint": self._base,
-                "detail": detail,
-            }
-        except Exception as exc:
-            return {
-                "healthy": False,
-                "error": str(exc),
-                "endpoint": self._base,
-                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
-            }
+        healthy = self.health_check()
+        latency_ms = round((time.monotonic() - t0) * 1000, 1)
+        return {
+            "healthy": healthy,
+            "latency_ms": latency_ms,
+            "endpoint": self._base,
+        }
 
     def search_code_degraded(
         self,
@@ -145,9 +148,9 @@ class CodeGraphClient:
         }
         try:
             resp = self._client.post(
-                f"{self._base}{_MCP_PATH}",
+                self._base,
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers=_MCP_HEADERS,
             )
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -155,7 +158,7 @@ class CodeGraphClient:
         except httpx.RequestError as exc:
             raise CodeGraphError(f"Request failed: {exc}") from exc
 
-        data = resp.json()
+        data = _parse_sse_response(resp.text) or {}
         if "error" in data:
             raise CodeGraphError(f"MCP error {data['error']}")
         return data.get("result")
@@ -171,15 +174,15 @@ class CodeGraphClient:
     ) -> list[dict[str, Any]]:
         """BM25 keyword search over indexed kernel source.
 
-        Returns a list of hit dicts with keys: file, line, snippet, score.
+        Returns a list of hit dicts with keys: file, snippet, score.
         """
         resolved = repo or self.resolve_repo(version_hint)
         params: dict[str, Any] = {"query": query, "limit": limit}
         if resolved:
-            params["repo"] = resolved
+            params["repos"] = [resolved]  # server expects array
 
-        result = self._call("tools/call", {"name": "search", "arguments": params})
-        return _extract_hits(result)
+        result = self._call("tools/call", {"name": "search_code", "arguments": params})
+        return _parse_code_hits(result)
 
     def page_index_walk(
         self,
@@ -188,21 +191,14 @@ class CodeGraphClient:
         repo: str | None = None,
         version_hint: str | None = None,
     ) -> dict[str, Any]:
-        """High-level PageIndex walk for a kernel source file or symbol.
-
-        Returns a dict with keys: file, symbols, summary (when available).
-        """
+        """High-level PageIndex walk for a kernel source file or symbol."""
         resolved = repo or self.resolve_repo(version_hint)
-        params: dict[str, Any] = {"file": file_path}
-        if symbol:
-            params["symbol"] = symbol
+        params: dict[str, Any] = {"query": file_path}
         if resolved:
-            params["repo"] = resolved
+            params["repos"] = [resolved]
 
-        result = self._call("tools/call", {"name": "page_index", "arguments": params})
-        if isinstance(result, dict):
-            return result
-        return {"raw": result}
+        result = self._call("tools/call", {"name": "search_code", "arguments": params})
+        return {"raw": _get_text_content(result)}
 
     def passthrough(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         """Low-level passthrough: call any MCP tool directly."""
@@ -212,19 +208,78 @@ class CodeGraphClient:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _extract_hits(result: Any) -> list[dict[str, Any]]:
-    """Normalise MCP result to a flat list of hit dicts."""
-    if result is None:
-        return []
-    if isinstance(result, list):
-        return result
-    # MCP may wrap hits in {"content": [...]} or {"hits": [...]}
+def _parse_sse_response(text: str) -> dict[str, Any] | None:
+    """Extract JSON payload from an SSE response body (data: <json> lines)."""
+    for line in text.splitlines():
+        if line.startswith("data: "):
+            try:
+                return json.loads(line[6:])
+            except json.JSONDecodeError:
+                pass
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _get_text_content(result: Any) -> str:
+    """Extract text from MCP content block."""
     if isinstance(result, dict):
-        for key in ("hits", "content", "results"):
-            if key in result and isinstance(result[key], list):
-                return result[key]
-    logger.debug("Unexpected CodeGraph result shape: %s", type(result))
-    return []
+        content = result.get("content", [])
+        if isinstance(content, list):
+            return "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
+    return str(result) if result else ""
+
+
+def _parse_code_hits(result: Any) -> list[dict[str, Any]]:
+    """Parse markdown text from search_code MCP result into hit dicts.
+
+    The server returns a single text block formatted as:
+        ### N. repo/path/to/file.c
+        Language: C | Score: 12345.6
+          L59: <code line>
+          ...
+    """
+    import re
+    text = _get_text_content(result)
+    if not text or "No code matches found" in text:
+        return []
+
+    hits: list[dict[str, Any]] = []
+    current_file: str | None = None
+    current_score: float = 0.0
+    snippet_lines: list[str] = []
+
+    file_re = re.compile(r"^###\s+\d+\.\s+(.+)$")
+    score_re = re.compile(r"Score:\s*([\d.]+)")
+    line_re = re.compile(r"^\s+L\d+:\s+(.*)$")
+
+    def flush() -> None:
+        if current_file and snippet_lines:
+            hits.append({
+                "file": current_file,
+                "snippet": "\n".join(snippet_lines[:8]),
+                "score": current_score,
+            })
+
+    for line in text.splitlines():
+        m = file_re.match(line)
+        if m:
+            flush()
+            current_file = m.group(1).strip()
+            current_score = 0.0
+            snippet_lines = []
+            continue
+        m = score_re.search(line)
+        if m and current_file:
+            current_score = float(m.group(1))
+            continue
+        m = line_re.match(line)
+        if m and current_file:
+            snippet_lines.append(m.group(1))
+
+    flush()
+    return hits
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

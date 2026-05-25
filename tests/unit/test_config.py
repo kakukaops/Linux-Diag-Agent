@@ -1,11 +1,25 @@
 """Unit tests for configs/config.py."""
 
 import pytest
+import configs.config as _cfg_mod
 from configs.config import DiagAgentConfig, get_config, reset_config
 
 
-def test_default_config_loads():
+@pytest.fixture()
+def default_only(monkeypatch):
+    """Suppress local.yaml so tests see only default.yaml values."""
+    original = _cfg_mod._load_yaml
+    def _no_local(path):
+        if "local.yaml" in str(path):
+            return {}
+        return original(path)
+    monkeypatch.setattr(_cfg_mod, "_load_yaml", _no_local)
     reset_config()
+    yield
+    reset_config()
+
+
+def test_default_config_loads(default_only):
     cfg = get_config()
     assert isinstance(cfg, DiagAgentConfig)
     assert cfg.llm.chat.backend == "claude_code"
@@ -16,8 +30,9 @@ def test_default_config_loads():
 def test_codegraph_repo_map():
     reset_config()
     cfg = get_config()
-    assert cfg.codegraph.repo_map["v6.6"] == "olk-kernel-v6.6"
-    assert cfg.codegraph.repo_map["OLK-5.10"] == "olk-kernel-v5.10"
+    # CodeGraph 实际索引名为 olk-kernel（list_repos 核实；OLK-6.6/5.10 同源同名）
+    assert cfg.codegraph.repo_map["v6.6"] == "olk-kernel"
+    assert cfg.codegraph.repo_map["OLK-5.10"] == "olk-kernel"
 
 
 def test_config_cached():
@@ -27,8 +42,7 @@ def test_config_cached():
     assert c1 is c2
 
 
-def test_llm_navigator_defaults():
-    reset_config()
+def test_llm_navigator_defaults(default_only):
     cfg = get_config()
     assert "haiku" in cfg.llm.navigator.model.lower()
     assert cfg.llm.navigator.concurrency == 4

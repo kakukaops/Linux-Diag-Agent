@@ -18,13 +18,16 @@ pip install -e ".[dev,ingest,agent]"
 docker compose up -d
 
 # 3. Database migrations
-alembic upgrade head
+alembic -c storage/pg/alembic.ini upgrade head
 
-# 4. Config
+# 4. Config (required — default.yaml alone won't work without LLM credentials)
 cp configs/default.yaml configs/local.yaml
-# edit configs/local.yaml as needed
+# Edit configs/local.yaml: set llm.chat.backend and credentials.
+# Options: claude_code (default, needs Claude Code CLI login),
+#          openai_compat (OpenRouter/DeepSeek, set llm.endpoints.api_key),
+#          vllm (self-hosted, set llm.endpoints.vllm)
 
-# 5. Smoke test (requires Claude Code CLI logged in)
+# 5. Smoke test
 diag-agent search "v6.6 上 order=4 的 normal zone OOM 怎么诊断"
 ```
 
@@ -32,7 +35,7 @@ diag-agent search "v6.6 上 order=4 的 normal zone OOM 怎么诊断"
 
 ```
 llm/           # M1 — LLM Provider abstraction (claude_code / openai_compat / ollama / vllm)
-storage/       # M2 — PostgreSQL schema (14 tables) + Neo4j graph model
+storage/       # M2 — PostgreSQL schema (16 tables) + Neo4j graph model
 ingest/        # M3 — Ingestion pipelines (lkml / bugzilla / syzbot / nvd / zenodo / kernel_commit)
 graph/         # M4 — Cross-Graph Linker (commit ↔ bug ↔ LKML ↔ CVE)
 retrieval/     # M5 — 7-route always-fire-all retrieval + LLM rerank
@@ -48,10 +51,13 @@ data/          # Runtime data (gitignored except .gitkeep)
 
 ## Documentation
 
-- [Architecture](docs/v1/Architecture.md)
+- [FAQ](docs/FAQ.md) — common questions (graph construction, architecture decisions)
+- [Architecture](docs/v1/Architecture.md) — system layers, knowledge graph construction, interface contracts
+- [Project Status](docs/v1/ProjectStatus.md) — current state, technical debt, next steps
 - [Project Plan](docs/v1/ProjectPlan.md)
-- [Knowledge Graph Overview](docs/v1/KnowledgeGraph_Overview.md)
 - [ADRs](docs/v1/adr/)
+
+For Claude Code context, see `CLAUDE.md` (root) and per-module `CLAUDE.md` files in `agent/`, `ingest/`, `retrieval/`, `llm/`, `storage/`, `graph/`.
 
 ## Requirements
 

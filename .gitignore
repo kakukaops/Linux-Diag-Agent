@@ -45,6 +45,9 @@ dmypy.json
 *~
 .DS_Store
 
+# Local config overrides (machine-specific, never commit)
+configs/local.yaml
+
 # Secrets — NEVER commit
 .env
 .env.*
@@ -60,9 +63,20 @@ data/syzbot/
 data/git/
 data/sosreport/
 data/zenodo/
+data/lkml/
+data/quarantine/
+data/lkml_backfill_checkpoint.json
+data/metrics/sync_audit.json
 # Keep structure markers
 !data/metrics/.gitkeep
 !data/traces/.gitkeep
+
+# Eval outputs (large, regenerable)
+eval/results/
+eval/results_v2/
+
+# Claude Code session metadata
+.claude/
 
 # Docker
 .docker/

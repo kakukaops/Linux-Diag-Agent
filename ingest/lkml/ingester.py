@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import text
@@ -15,9 +15,6 @@ from ingest.lkml.thread_builder import ThreadBuilder
 from ingest.lkml.summarizer import ThreadSummarizer
 
 logger = logging.getLogger(__name__)
-
-# ADR-010: start from 2024-05-14
-_BOOTSTRAP_SINCE = datetime(2024, 5, 14, tzinfo=timezone.utc)
 
 
 class LkmlIngester(BaseIngester):
@@ -35,7 +32,9 @@ class LkmlIngester(BaseIngester):
 
         from configs.config import get_config
         cfg = get_config()
-        lists = cfg.ingestion.lkml.lists if hasattr(cfg.ingestion, "lkml") else KERNEL_LISTS
+        lkml_cfg = cfg.ingestion.lkml
+        lists = lkml_cfg.lists or KERNEL_LISTS
+        default_since = datetime.now(timezone.utc) - timedelta(days=lkml_cfg.lookback_days)
 
         fetcher = LoreFetcher(self._data_dir)
         thread_builder = ThreadBuilder(self._engine)
@@ -49,7 +48,7 @@ class LkmlIngester(BaseIngester):
                 since_dt = (
                     datetime.fromisoformat(since_iso)
                     if since_iso
-                    else _BOOTSTRAP_SINCE
+                    else default_since
                 )
                 data = fetcher.fetch_mbox(list_name, since=since_dt)
                 if not data.strip():

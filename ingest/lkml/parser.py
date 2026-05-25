@@ -57,8 +57,6 @@ class ParsedMessage:
 def parse_mbox_bytes(data: bytes, list_name: str) -> list[ParsedMessage]:
     """Parse raw mbox bytes into ParsedMessage list."""
     results: list[ParsedMessage] = []
-    box = mailbox.mbox(None)  # type: ignore[arg-type]
-    # mailbox.mbox expects a file path; use StringIO workaround via BytesIO
     try:
         mbox_io = io.BytesIO(data)
         msgs = _iter_mbox(mbox_io)

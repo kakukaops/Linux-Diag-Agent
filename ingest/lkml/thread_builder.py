@@ -53,9 +53,15 @@ class ThreadBuilder:
         return row[0] if row else None
 
     def _create_thread(self, msg: ParsedMessage) -> int:
+        # ON CONFLICT makes this idempotent: a thread row for this
+        # root_message_id may already exist (targeted/lazy fetch reaches a
+        # thread root in isolation — ADR-025). DO UPDATE is a no-op so that
+        # RETURNING still yields the existing row's id.
         sql = text("""
             INSERT INTO lkml_thread (root_message_id, subject, list_name, date_start, message_count)
             VALUES (:root_id, :subject, :list_name, :date_start, 0)
+            ON CONFLICT (root_message_id)
+                DO UPDATE SET root_message_id = EXCLUDED.root_message_id
             RETURNING id
         """)
         with self._engine.connect() as conn:

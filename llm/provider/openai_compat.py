@@ -62,8 +62,17 @@ class OpenAICompatProvider:
     # ── Public interface ─────────────────────────────────────────────────
 
     def chat(self, req: ChatRequest) -> ChatResponse:
-        """Call with automatic retry on rate-limit errors."""
-        last_exc: LLMProviderError | None = None
+        """Call with automatic retry on rate-limit AND transient network errors.
+
+        Retries on:
+          - LLMProviderError(code='rate_limited')  — upstream 429
+          - openai.APIConnectionError / APITimeoutError  — TCP/DNS/timeout
+          - openai.APIError(5xx)                   — upstream transient
+        Under concurrency=3 these were observed as ~50% case-failure rate
+        because the SDK retry path is disabled (max_retries=0); without
+        app-level retry they're fatal.
+        """
+        last_exc: Exception | None = None
         max_attempts = self._retry.max_attempts
         for attempt in range(1, max_attempts + 1):
             try:
@@ -76,10 +85,27 @@ class OpenAICompatProvider:
                     (exc.retry_after_seconds or 0) or self._retry.backoff_initial * (2 ** (attempt - 1)),
                     self._retry.backoff_max,
                 )
-                logger.warning(
-                    "429 rate limited, waiting %.1fs then retry %d/%d",
-                    backoff, attempt + 1, max_attempts,
-                )
+                logger.warning("429 rate limited, waiting %.1fs then retry %d/%d",
+                               backoff, attempt + 1, max_attempts)
+                time.sleep(backoff)
+                last_exc = exc
+            except (openai.APIConnectionError, openai.APITimeoutError) as exc:
+                if attempt >= max_attempts:
+                    raise
+                backoff = min(self._retry.backoff_initial * (2 ** (attempt - 1)),
+                              self._retry.backoff_max)
+                logger.warning("network error (%s), retrying in %.1fs (%d/%d)",
+                               type(exc).__name__, backoff, attempt + 1, max_attempts)
+                time.sleep(backoff)
+                last_exc = exc
+            except openai.APIStatusError as exc:
+                # Retry on 5xx (upstream transient). 4xx (other than 429) raise immediately.
+                if exc.status_code < 500 or attempt >= max_attempts:
+                    raise
+                backoff = min(self._retry.backoff_initial * (2 ** (attempt - 1)),
+                              self._retry.backoff_max)
+                logger.warning("upstream %d, retrying in %.1fs (%d/%d)",
+                               exc.status_code, backoff, attempt + 1, max_attempts)
                 time.sleep(backoff)
                 last_exc = exc
         raise last_exc  # type: ignore[misc]

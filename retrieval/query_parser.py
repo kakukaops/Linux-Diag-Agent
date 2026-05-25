@@ -24,13 +24,13 @@ _PARSE_PROMPT = """\
 You are a Linux kernel expert. Extract structured retrieval parameters from the user's question.
 
 Return ONLY valid JSON with these fields (omit missing ones):
-{
+{{
   "keywords": ["<relevant kernel terms>"],
   "kernel_version": "<OLK-6.6 | OLK-5.10 | mainline | null>",
   "subsystem": "<e.g. mm, net/tcp, fs/ext4, or null>",
   "cve_ids": ["<CVE-YEAR-NNNNN>"],
   "commit_hashes": ["<sha>"]
-}
+}}
 
 Question: {question}
 """
@@ -60,7 +60,7 @@ def _llm_parse(raw_question: str) -> RetrievalQuery:
     from configs.config import get_config
 
     cfg = get_config()
-    provider = get_provider(cfg.llm.navigator.provider)
+    provider = get_provider(cfg.llm.navigator.backend)
     req = ChatRequest(
         messages=[
             Message(role="user", content=_PARSE_PROMPT.format(question=raw_question)),

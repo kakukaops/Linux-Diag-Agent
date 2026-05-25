@@ -13,37 +13,48 @@ from collections import deque
 
 
 class SlidingWindowRateLimiter:
-    """Thread-safe sliding window rate limiter.
+    """Thread-safe sliding window rate limiter with optional minimum inter-call interval.
 
     Args:
         window_seconds: Length of the rolling window (e.g. 18000 for 5h).
         max_calls: Maximum calls allowed within the window.
+        min_interval_seconds: Minimum time between successive calls (0 = no spacing).
+            Set to window_seconds/max_calls to spread calls evenly and avoid burst.
     """
 
-    def __init__(self, window_seconds: float = 18000, max_calls: int = 40) -> None:
+    def __init__(self, window_seconds: float = 18000, max_calls: int = 40,
+                 min_interval_seconds: float = 0.0) -> None:
         self._window = window_seconds
         self._max = max_calls
+        self._min_interval = min_interval_seconds
         self._timestamps: deque[float] = deque()
+        self._last_acquired: float = 0.0
         self._lock = threading.Lock()
 
     def acquire(self, block: bool = True) -> bool:
         """Block until a call slot is available, or return False immediately.
 
         Returns True when a slot is acquired, False if block=False and no slot.
+        Enforces both the sliding-window cap and the minimum inter-call interval.
         """
         while True:
             with self._lock:
                 now = time.monotonic()
                 self._evict(now)
-                if len(self._timestamps) < self._max:
+                window_ok = len(self._timestamps) < self._max
+                interval_wait = max(0.0, self._last_acquired + self._min_interval - now)
+                if window_ok and interval_wait <= 0:
                     self._timestamps.append(now)
+                    self._last_acquired = now
                     return True
                 if not block:
                     return False
-                # Compute wait until the oldest entry expires
-                wait = self._timestamps[0] + self._window - now
+                if not window_ok:
+                    wait = self._timestamps[0] + self._window - now
+                else:
+                    wait = interval_wait
 
-            time.sleep(max(0.1, wait))
+            time.sleep(max(0.05, wait))
 
     def remaining(self) -> int:
         with self._lock:
@@ -85,3 +96,27 @@ def get_limiter(role: str = "chat") -> SlidingWindowRateLimiter:
                 max_calls=rl.max_messages,
             )
         return _limiter_registry[role]
+
+
+# Per-endpoint global instances — shared across ALL roles using the same API endpoint.
+# This enforces account-level RPM caps (e.g. OpenRouter 20 rpm total, not per-role).
+_endpoint_limiters: dict[str, SlidingWindowRateLimiter] = {}
+_endpoint_lock = threading.Lock()
+
+
+def get_endpoint_limiter(endpoint: str, rpm: int) -> SlidingWindowRateLimiter:
+    """Return the shared per-minute rate limiter for the given API endpoint URL.
+
+    Uses min_interval_seconds = 60/rpm to spread calls evenly and avoid burst
+    throttling from upstream providers even when within the per-minute cap.
+    First call for an endpoint wins; subsequent calls share the same limiter.
+    """
+    with _endpoint_lock:
+        if endpoint not in _endpoint_limiters:
+            min_interval = 60.0 / rpm if rpm > 0 else 0.0
+            _endpoint_limiters[endpoint] = SlidingWindowRateLimiter(
+                window_seconds=60,
+                max_calls=rpm,
+                min_interval_seconds=min_interval,
+            )
+        return _endpoint_limiters[endpoint]

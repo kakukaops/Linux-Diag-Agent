@@ -72,10 +72,11 @@ codegraph:
   timeout_seconds: 30
   repo_map:
     # kernel_version → codesearch repo name (ADR-009)
-    "v6.6": olk-kernel-v6.6
-    "OLK-6.6": olk-kernel-v6.6
-    "v5.10": olk-kernel-v5.10
-    "OLK-5.10": olk-kernel-v5.10
+    # actual name in codesearch index (verified via list_repos): olk-kernel
+    "v6.6": olk-kernel
+    "OLK-6.6": olk-kernel
+    "v5.10": olk-kernel
+    "OLK-5.10": olk-kernel
 
 # ── Ingestion (M3) ────────────────────────────────────────────────────────
 ingestion:
@@ -136,6 +137,10 @@ retrieval:
   rerank:
     enabled: true
     min_candidates: 10              # 候选 > 10 才触发重排
+
+# ── Knowledge data mode (ADR-025) ─────────────────────────────────────────
+knowledge:
+  mode: online                     # online | offline（气隙部署用 offline）
 
 # ── Observability (ADR-016) ───────────────────────────────────────────────
 observability:

@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class RateLimitConfig(BaseModel):
     window_seconds: int = 18000
     max_messages: int = 40
+    rate_limit_rpm: int = 0  # per-minute cap for remote APIs (0 = disabled)
 
 
 class RetryConfig(BaseModel):
@@ -47,6 +48,7 @@ class LLMEndpointsConfig(BaseModel):
     vllm: str = "http://localhost:8000/v1"
     ollama: str = "http://localhost:11434/v1"
     anthropic: str = "https://api.anthropic.com"
+    api_key: str = ""  # fallback when env var not set; gitignored via local.yaml
 
 
 class LLMConfig(BaseModel):
@@ -107,10 +109,18 @@ class KernelCommitIngestionConfig(BaseModel):
     mainline_repo: MainlineRepoConfig = Field(default_factory=MainlineRepoConfig)
 
 
+class LkmlIngestionConfig(BaseModel):
+    base_url: str = "https://lore.kernel.org"
+    lists: list[str] = Field(default_factory=lambda: ["linux-kernel", "stable"])
+    lookback_days: int = 730
+    batch_size: int = 200
+
+
 class IngestionConfig(BaseModel):
     kernel_commit: KernelCommitIngestionConfig = Field(
         default_factory=KernelCommitIngestionConfig
     )
+    lkml: LkmlIngestionConfig = Field(default_factory=LkmlIngestionConfig)
 
 
 class RetrievalConfig(BaseModel):
@@ -118,6 +128,15 @@ class RetrievalConfig(BaseModel):
     routes: list[str] = Field(
         default_factory=lambda: ["code", "docs", "lkml", "bug", "syzbot", "commit", "cve"]
     )
+
+
+class KnowledgeConfig(BaseModel):
+    """知识数据架构模式（ADR-025）。
+
+    online : LKML 走 L2 懒加载缓存 + L3 lore live search（默认）。
+    offline: 气隙部署,仅用本地 L2 缓存,禁用 lore live search。
+    """
+    mode: str = "online"  # "online" | "offline"
 
 
 class ObservabilityConfig(BaseModel):
@@ -144,6 +163,7 @@ class DiagAgentConfig(BaseModel):
     codegraph: CodeGraphConfig = Field(default_factory=CodeGraphConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
 

@@ -2,10 +2,16 @@
 
 Covers: OpenAI / DeepSeek / Moonshot / 智谱 / 百炼 / vLLM / ollama.
 The vllm and ollama providers are thin subclasses that set default endpoints.
+
+Rate limiting strategy:
+  - `rate_limit.rate_limit_rpm > 0` → proactive per-minute sliding-window limiter
+    (acquires a slot before each call, blocks until one is free)
+  - On 429 response → exponential backoff retry up to `retry.max_attempts` times
 """
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Iterator
 from threading import Semaphore
@@ -21,6 +27,8 @@ from llm.provider.base import (
     Usage,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class OpenAICompatProvider:
     """Generic OpenAI Chat Completions provider (native schema, no translation)."""
@@ -29,28 +37,67 @@ class OpenAICompatProvider:
 
     def __init__(self, role: str = "chat", endpoint: str | None = None) -> None:
         from configs.config import get_config
+        from llm.rate_limit.sliding_window import get_endpoint_limiter
         cfg = get_config()
         role_cfg = cfg.llm.chat if role == "chat" else cfg.llm.navigator
         self._model = role_cfg.model
         self._timeout = role_cfg.timeout_seconds
         self._semaphore = Semaphore(role_cfg.concurrency)
+        self._retry = role_cfg.retry
 
         base_url = endpoint or cfg.llm.endpoints.openai_compat or None
-        api_key = _read_api_key("OPENAI_API_KEY", "OPENAI_COMPAT_API_KEY") or "none"
-        self._client = openai.OpenAI(base_url=base_url, api_key=api_key)
+        api_key = (_read_api_key("OPENAI_API_KEY", "OPENAI_COMPAT_API_KEY")
+                   or cfg.llm.endpoints.api_key
+                   or "none")
+        # max_retries=0: disable SDK auto-retry so our application-level retry
+        # (with rate-limiter re-acquire) is the only retry path.
+        self._client = openai.OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+
+        # Shared account-level per-minute limiter (keyed by endpoint URL so all
+        # roles using the same API share one counter, preventing total > rpm).
+        rpm = role_cfg.rate_limit.rate_limit_rpm
+        endpoint_key = base_url or "openai_compat_default"
+        self._rpm_limiter = get_endpoint_limiter(endpoint_key, rpm) if rpm > 0 else None
 
     # ── Public interface ─────────────────────────────────────────────────
 
     def chat(self, req: ChatRequest) -> ChatResponse:
-        chunks = list(self.chat_stream(req))
-        return _assemble(chunks, provider=self.provider_name)
+        """Call with automatic retry on rate-limit errors."""
+        last_exc: LLMProviderError | None = None
+        max_attempts = self._retry.max_attempts
+        for attempt in range(1, max_attempts + 1):
+            try:
+                chunks = list(self.chat_stream(req))
+                return _assemble(chunks, provider=self.provider_name)
+            except LLMProviderError as exc:
+                if exc.code != "rate_limited" or attempt >= max_attempts:
+                    raise
+                backoff = min(
+                    (exc.retry_after_seconds or 0) or self._retry.backoff_initial * (2 ** (attempt - 1)),
+                    self._retry.backoff_max,
+                )
+                logger.warning(
+                    "429 rate limited, waiting %.1fs then retry %d/%d",
+                    backoff, attempt + 1, max_attempts,
+                )
+                time.sleep(backoff)
+                last_exc = exc
+        raise last_exc  # type: ignore[misc]
 
     def chat_stream(self, req: ChatRequest) -> Iterator[ChatChunk]:
+        # Proactive rate limit: block until a per-minute slot is free
+        if self._rpm_limiter:
+            self._rpm_limiter.acquire()
+
         params = _build_params(req, self._model)
         with self._semaphore:
             try:
-                stream = self._client.chat.completions.create(**params, stream=True,
-                                                              timeout=self._timeout)
+                stream = self._client.chat.completions.create(
+                    **params, stream=True,
+                    stream_options={"include_usage": True},
+                    timeout=self._timeout,
+                )
+                tool_buf: dict[int, dict] = {}
                 for chunk in stream:
                     choice = chunk.choices[0] if chunk.choices else None
                     if not choice:
@@ -58,6 +105,8 @@ class OpenAICompatProvider:
                     delta = choice.delta
                     text = delta.content or ""
                     finish = choice.finish_reason
+                    for tcd in (getattr(delta, "tool_calls", None) or []):
+                        _accumulate_tool_call(tool_buf, tcd)
                     usage: Usage | None = None
                     if hasattr(chunk, "usage") and chunk.usage:
                         usage = Usage(
@@ -65,6 +114,9 @@ class OpenAICompatProvider:
                             output_tokens=chunk.usage.completion_tokens,
                         )
                     yield ChatChunk(delta=text, finish_reason=finish, usage=usage)
+                # OpenAI streams tool-call args as fragments — emit once whole
+                for tc in _drain_tool_calls(tool_buf):
+                    yield ChatChunk(tool_call_delta=tc)
             except openai.RateLimitError as e:
                 raise LLMProviderError(str(e), code="rate_limited",
                                        retry_after_seconds=60.0, provider=self.provider_name)
@@ -109,10 +161,7 @@ class OllamaProvider(OpenAICompatProvider):
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _build_params(req: ChatRequest, default_model: str) -> dict:
-    messages = [
-        {"role": m.role, "content": _content(m)}
-        for m in req.messages
-    ]
+    messages = [_msg_dict(m) for m in req.messages]
     params: dict = {
         "model": req.model or default_model,
         "messages": messages,
@@ -135,11 +184,65 @@ def _content(msg) -> str | list:
     return msg.content or ""
 
 
+def _msg_dict(msg) -> dict:
+    """Serialize one Message to the OpenAI wire dict, keeping tool-call fields.
+
+    Without tool_calls / tool_call_id, a multi-turn ReAct conversation cannot
+    be replayed back to the model (the assistant's requested calls and the
+    tool results would be lost). M22 needs the full history round-tripped.
+    """
+    d: dict = {"role": msg.role, "content": _content(msg)}
+    if msg.tool_calls:
+        d["tool_calls"] = [tc.model_dump() for tc in msg.tool_calls]
+    if msg.tool_call_id:
+        d["tool_call_id"] = msg.tool_call_id
+    if msg.name:
+        d["name"] = msg.name
+    return d
+
+
+def _accumulate_tool_call(buf: dict[int, dict], tcd) -> None:
+    """Merge one streaming tool-call delta into the index-keyed buffer.
+
+    OpenAI streams a tool call as: index + id + name in the first delta, then
+    the `arguments` JSON string in fragments across the following deltas.
+    """
+    idx = getattr(tcd, "index", 0) or 0
+    slot = buf.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+    if getattr(tcd, "id", None):
+        slot["id"] = tcd.id
+    fn = getattr(tcd, "function", None)
+    if fn is not None:
+        if getattr(fn, "name", None):
+            slot["name"] = fn.name
+        if getattr(fn, "arguments", None):
+            slot["arguments"] += fn.arguments
+
+
+def _drain_tool_calls(buf: dict[int, dict]) -> list[ToolCall]:
+    """Turn the accumulated buffer into ToolCall objects, in index order."""
+    out: list[ToolCall] = []
+    for idx in sorted(buf):
+        slot = buf[idx]
+        if not slot["name"]:
+            continue
+        kwargs: dict = {"function": {"name": slot["name"],
+                                     "arguments": slot["arguments"] or "{}"}}
+        if slot["id"]:
+            kwargs["id"] = slot["id"]
+        out.append(ToolCall(**kwargs))
+    return out
+
+
 def _assemble(chunks: list[ChatChunk], provider: str) -> ChatResponse:
     text = "".join(c.delta for c in chunks)
     finish = next((c.finish_reason for c in reversed(chunks) if c.finish_reason), "stop")
     usage = next((c.usage for c in reversed(chunks) if c.usage), Usage())
-    return ChatResponse(content=text, finish_reason=finish,  # type: ignore[arg-type]
+    tool_calls = [c.tool_call_delta for c in chunks if c.tool_call_delta]
+    if tool_calls and finish == "stop":
+        finish = "tool_calls"          # some compat servers omit the signal
+    return ChatResponse(content=text, tool_calls=tool_calls,
+                        finish_reason=finish,  # type: ignore[arg-type]
                         usage=usage, provider=provider)
 
 

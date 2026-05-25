@@ -151,6 +151,11 @@ class OpenAICompatProvider:
             except openai.BadRequestError as e:
                 raise LLMProviderError(str(e), code="tool_schema_invalid",
                                        provider=self.provider_name)
+            except (openai.APIConnectionError, openai.APITimeoutError, openai.APIStatusError):
+                # Pass-through so chat() retry loop catches raw types and applies backoff.
+                # WAS bug: catch-all below wrapped these as code="unknown" → retry-loop
+                # treated as fatal → ~33 % case-failure rate at concurrency=3.
+                raise
             except Exception as e:
                 raise LLMProviderError(str(e), code="unknown", provider=self.provider_name)
 

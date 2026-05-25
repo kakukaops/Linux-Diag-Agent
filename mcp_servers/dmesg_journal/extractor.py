@@ -59,6 +59,17 @@ _OOM_RE = re.compile(
     r"Out of memory: Kill process (\d+) \((\S+)\) score (\d+)",
     re.IGNORECASE,
 )
+# Page allocation failure — memory pressure event in same family as OOM.
+# Form: "<comm>: page allocation failure: order:N, mode:0x..."
+_ALLOC_FAIL_RE = re.compile(
+    r"(\S+):\s+page allocation failure:\s*order:(\d+)",
+    re.IGNORECASE,
+)
+# Hung task — "task <comm>:<pid> blocked for more than <N> seconds"
+_HUNG_TASK_RE = re.compile(
+    r"task\s+(\S+):(\d+)\s+blocked for more than (\d+) seconds",
+    re.IGNORECASE,
+)
 _SOFT_LOCKUP_RE = re.compile(r"soft lockup.*?CPU#(\d+)", re.IGNORECASE)
 _HARD_LOCKUP_RE = re.compile(r"NMI watchdog.*?Hard LOCKUP.*?CPU (\d+)", re.IGNORECASE)
 _RCU_STALL_RE = re.compile(r"RCU.*?stall detected.*?CPU (\d+)", re.IGNORECASE)
@@ -104,6 +115,26 @@ def _match_event(
             raw,
             trace,
             metadata={"pid": m.group(1), "comm": m.group(2), "score": int(m.group(3))},
+        )
+
+    m = _ALLOC_FAIL_RE.search(stripped)
+    if m:
+        raw, trace = _collect_block(lines, idx, max_lines=30)
+        return KernelEvent(
+            EventKind.oom,
+            f"Page allocation failure: {m.group(1)} order={m.group(2)}",
+            raw, trace,
+            metadata={"comm": m.group(1), "order": int(m.group(2))},
+        )
+
+    m = _HUNG_TASK_RE.search(stripped)
+    if m:
+        raw, trace = _collect_block(lines, idx, max_lines=30)
+        return KernelEvent(
+            EventKind.bug,
+            f"Hung task: {m.group(1)}:{m.group(2)} blocked {m.group(3)}s",
+            raw, trace,
+            metadata={"comm": m.group(1), "pid": m.group(2), "seconds": int(m.group(3))},
         )
 
     m = _BUG_RE.match(stripped)

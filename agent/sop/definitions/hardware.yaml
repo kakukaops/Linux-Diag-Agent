@@ -1,0 +1,65 @@
+name: hardware
+description: 疑似硬件故障的诊断 SOP（ADR-023；M11 T-020）
+
+# Trigger: any of these signals in dmesg / triage output
+fault_kinds_triggering:
+  - hardlockup
+  - panic_with_hw_error
+  - mce
+
+trigger_signals:
+  - has_hardware_error_in_dmesg: true
+  - taint_M_set: true
+  - mce_event_in_dmesg: true
+  - edac_uncorrected_in_last_1h: true
+
+steps:
+  - id: hw_step_1
+    description: "解析 taint flags，确认硬件相关位（M=MCE, B=bad page）"
+    tool: parse_taint_flags
+    next: hw_step_2
+
+  - id: hw_step_2
+    description: "查 mcelog 定位 MCE 事件（CPU bank、error type、severity）"
+    tool: get_mce_log
+    args:
+      since: "now-24h"
+    next: hw_step_3
+
+  - id: hw_step_3
+    description: "查 EDAC 累积 ECC 错误计数（CE/UE per DIMM）"
+    tool: get_edac_errors
+    next: hw_step_4
+
+  - id: hw_step_4
+    description: "查 IPMI SEL 捕获 OS 视野外的硬件事件（BMC 级别）"
+    tool: get_ipmi_sel
+    args:
+      severity_filter: "critical_only"
+    next: hw_step_5
+
+  - id: hw_step_5
+    description: "获取硬件 inventory（BIOS 版本、微码、DIMM 槽位信息）"
+    tool: get_hardware_inventory
+    next: conclude
+
+  - id: conclude
+    description: "综合所有硬件证据，给出 RAS 建议（RMA / 固件更新 / 微码更新）"
+
+report_sections:
+  - hardware_signals_summary
+  - mce_analysis
+  - edac_trend
+  - ipmi_sel_critical
+  - hardware_inventory_snapshot
+  - recommended_actions
+
+# CRITICAL: hardware route must NOT reference kernel commits (ADR-023)
+forbidden:
+  - "不引用 kernel commit 作为根因"
+  - "不指向 kernel bug，即使曾调用过 search_commits 作为辅助"
+
+confidence_threshold:
+  high: "MCE uncorrected + EDAC UE + IPMI critical ≥2 同时满足"
+  medium: "上述三者中 1 个 + taint=M"
+  low: "仅 taint=M，无具体硬件证据 → 报告中标注'待 SRE 二次确认'"

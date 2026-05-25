@@ -26,8 +26,6 @@ def upgrade() -> None:
         sa.Column("source", sa.Text()),
         sa.UniqueConstraint("commit_hash", "cve_id", "link_type", name="uq_lcc"),
     )
-    op.create_index("ix_link_commit_cve_commit_hash", "link_commit_cve", ["commit_hash"])
-    op.create_index("ix_link_commit_cve_cve_id", "link_commit_cve", ["cve_id"])
 
 
 def downgrade() -> None:

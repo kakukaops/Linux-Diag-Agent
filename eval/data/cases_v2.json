@@ -1,0 +1,215 @@
+[
+  {
+    "id": "oom-001",
+    "category": "oom",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "oom",
+    "raw_input": "[  142.312451] oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,oom_memcg=/app/java,task_memcg=/app/java,task=java,pid=1234,uid=1000\n[  142.312453] Out of memory: Killed process 1234 (java) total-vm:8192000kB, anon-rss:3995200kB, file-rss:12800kB, shmem-rss:0kB, UID:1000 pgtables:8256kB oom_score_adj:0\n[  142.312460] memory: usage 4194304kB, limit 4194304kB, failcnt 47\n[  142.312462] oom_kill_process: Kill process 1234 (java) score 800 or sacrifice child",
+    "question": "v6.6 OLK kernel: Out of memory kill of process 'java' with oom_score 800. cgroup memory limit 4GB hit. How to diagnose?",
+    "expected_commit_hashes": [
+      "892962a260268edda0648e02b3dc9664d06432c1",
+      "038ff4e1f9a3f87703790a75985e52c4b8d9ba5f",
+      "5647e53f7856bb39dae781fe26aa65a699e2fc9f"
+    ],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "OOM kill triggered by cgroup memory.limit_in_bytes=4GB exhaustion; java process RSS 3.8GB exceeded limit. Caused by memcg accounting undercount or misconfigured limit without swap.",
+    "notes": "Classic memcg-triggered OOM kill"
+  },
+  {
+    "id": "oom-002",
+    "category": "oom",
+    "kernel_version": "OLK-5.10",
+    "expected_route": "kernel",
+    "expected_fault_kind": "oom",
+    "raw_input": "[3721.882134] kswapd0: page allocation failure: order:4, mode:0x40dc0(GFP_KERNEL|__GFP_COMP|__GFP_ZERO), nodemask=(null),cpuset=/,mems_allowed=0\n[3721.882140] CPU: 3 PID: 82 Comm: kswapd0 Not tainted 5.10.0-153.oe2203sp3.x86_64\n[3721.882145] Call Trace:\n[3721.882148]  dump_stack+0x74/0x96\n[3721.882152]  warn_alloc+0x13f/0x180\n[3721.882155]  __alloc_pages_slowpath+0xbf3/0xcc0\n[3721.882158]  __alloc_pages+0x32b/0x350\n[3721.882162] Mem-Info:\n[3721.882165] Normal zone: 1 pages free of 1966080 pages (fragmentation_index=980)",
+    "question": "OLK-5.10: kswapd0 page allocation failure order=4. Normal zone fragmentation_index=980. System has 64GB RAM but order-4 alloc fails.",
+    "expected_commit_hashes": [
+      "d1c78ef29dce95fb3aca691176ca3251312e6a15",
+      "892962a260268edda0648e02b3dc9664d06432c1"
+    ],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "High-order allocation failure due to memory fragmentation (fragmentation_index=980 is critical). kswapd cannot compact pages fast enough. Fix: increase vm.min_free_kbytes or enable transparent hugepage compaction.",
+    "notes": "Memory fragmentation OOM — no cgroup involved"
+  },
+  {
+    "id": "oom-003",
+    "category": "oom",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "oom",
+    "raw_input": "[89234.112340] oom_reaper: reaped process 7891 (mysqld), now anon-rss:0kB, file-rss:0kB, shmem-rss:0kB\n[89234.112350] Tasks state (memory values in pages):\n[89234.112352] [  pid  ]   uid  tgid total_vm      rss pgtables_bytes swapents oom_score_adj name\n[89234.112355] [   7891]  1001  7891  2097152  1572864    16777216        0           0 mysqld\n[89234.112360] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),oom_memcg=(null),task_memcg=/system.slice/mysqld.service,task=mysqld,pid=7891,uid=1001\n[89234.112365] Out of memory: Killed process 7891 (mysqld) total-vm:8388608kB, anon-rss:6291456kB",
+    "question": "OLK-6.6 system: mysqld killed by OOM reaper. Process had 6GB anon-rss. No cgroup limit. System RAM 16GB. How to diagnose the leak?",
+    "expected_commit_hashes": [
+      "038ff4e1f9a3f87703790a75985e52c4b8d9ba5f"
+    ],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "mysqld consumed 6GB anon-rss on a 16GB system — likely buffer pool misconfiguration (innodb_buffer_pool_size too high) or memory leak. System-wide OOM (no cgroup), triggered by global page shortage.",
+    "notes": "System-wide OOM without memcg — mysqld memory leak or misconfiguration"
+  },
+  {
+    "id": "softlockup-001",
+    "category": "lockup",
+    "kernel_version": "OLK-5.10",
+    "expected_route": "kernel",
+    "expected_fault_kind": "softlockup",
+    "raw_input": "[43210.123456] watchdog: BUG: soft lockup - CPU#2 stuck for 23s! [kworker/2:1H:345]\n[43210.123460] Modules linked in: nf_conntrack ip6table_filter ip6_tables\n[43210.123465] CPU: 2 PID: 345 Comm: kworker/2:1H Not tainted 5.10.0-153.oe2203sp3.x86_64 #1\n[43210.123470] Call Trace:\n[43210.123475]  <TASK>\n[43210.123478]  __schedule+0x35a/0x930\n[43210.123482]  schedule+0x5c/0xd0\n[43210.123485]  worker_thread+0x4b/0x3c0\n[43210.123489]  kthread+0x13e/0x160\n[43210.123492]  ret_from_fork+0x1f/0x30",
+    "question": "Soft lockup on CPU#2 stuck for 23s in kworker/2:1H. Call trace shows __schedule. OLK-5.10 kernel.",
+    "expected_commit_hashes": [
+      "72a5671b9ab39e5f923354d1f55e92367cc4f3f3",
+      "ad83e90584844f87f3a1b78b60ea5c23ac13fe6d"
+    ],
+    "expected_bug_ids": [217, 1467],
+    "ground_truth_root_cause": "kworker soft lockup in __schedule indicates a high-priority work item blocking the scheduler. Could be filesystem writeback (kworker/2:1H = high-priority), disk I/O hang, or scheduler starvation under heavy I/O load.",
+    "notes": "Scheduler soft lockup — kworker blocked in __schedule"
+  },
+  {
+    "id": "softlockup-002",
+    "category": "lockup",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "softlockup",
+    "raw_input": "[98765.432100] INFO: task mysqld:1234 blocked for more than 120 seconds.\n[98765.432105]       Not tainted 6.6.0-28.0.0.34.oe2403.x86_64 #1\n[98765.432110] \"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\" disables this message.\n[98765.432115] task:mysqld          state:D stack:    0 pid: 1234 ppid:  1 flags:0x00004002\n[98765.432120] Call Trace:\n[98765.432125]  <TASK>\n[98765.432130]  __schedule+0x35a/0x930\n[98765.432135]  schedule+0x5c/0xd0\n[98765.432140]  io_schedule+0x42/0x70\n[98765.432145]  __folio_wait_bit+0xa0/0x190\n[98765.432150]  filemap_wait_on_page_writeback+0x52/0x80\n[98765.432155]  ext4_writepages+0x6e3/0xe10",
+    "question": "OLK-6.6: mysqld hung for 120s in D state. Call trace: io_schedule -> filemap_wait_on_page_writeback -> ext4_writepages. Disk not full. How to diagnose?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [1467],
+    "ground_truth_root_cause": "mysqld blocked in D state waiting on ext4 writeback I/O. Likely cause: disk/storage I/O hang (SAN timeout, disk failure, storage controller lockup), or ext4 journal flush blocking. Check storage path.",
+    "notes": "Hung task in ext4 writeback — I/O hang, not scheduler bug"
+  },
+  {
+    "id": "kasan-001",
+    "category": "oops",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "oops",
+    "raw_input": "[  234.567890] BUG: KASAN: use-after-free in tcp_v4_do_rcv+0x123/0x456\n[  234.567895] Read of size 8 at addr ffff888123456789 by task swapper/0/0\n[  234.567900] CPU: 0 PID: 0 Comm: swapper/0 Not tainted 6.6.0 #1\n[  234.567905] Call Trace:\n[  234.567910]  <IRQ>\n[  234.567915]  tcp_v4_do_rcv+0x123/0x456\n[  234.567920]  tcp_v4_rcv+0x7e2/0x1090\n[  234.567925]  ip_protocol_deliver_rcu+0xdb/0x210\n[  234.567930]  ip_local_deliver_finish+0x1bc/0x2a0\n[  234.567935]  ip_local_deliver+0x133/0x170\n[  234.567940] The buggy address belongs to the object at ffff888123456780\n[  234.567945]  which belongs to the cache request_sock_TCP of size 416",
+    "question": "KASAN: use-after-free in tcp_v4_do_rcv+0x123/0x456. OLK-6.6. Read of size 8. request_sock_TCP cache.",
+    "expected_commit_hashes": [
+      "f28b3ec79a10e2d95cb1c6fe9d97bace45cd167b",
+      "47fd935568ebd1b11db58a4e8759c6d3fe5d910a"
+    ],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "Use-after-free in TCP receive path accessing request_sock_TCP after it was freed. Classic reqsk lifecycle bug: a TCP RST or concurrent close races with incoming SYN processing.",
+    "notes": "TCP use-after-free in reqsk handling"
+  },
+  {
+    "id": "kasan-002",
+    "category": "oops",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "oops",
+    "raw_input": "[  567.891234] BUG: KASAN: slab-out-of-bounds in kmalloc_trace+0x123/0x200\n[  567.891240] Write of size 1 at addr ffff888200001000 by task nginx/5678\n[  567.891245] CPU: 4 PID: 5678 Comm: nginx Not tainted 6.6.0-28.0.0.34.oe2403.x86_64 #1\n[  567.891250] Call Trace:\n[  567.891255]  <TASK>\n[  567.891260]  kmalloc_trace+0x123/0x200\n[  567.891265]  skb_put+0x4a/0x90\n[  567.891270]  tcp_send_mss+0x12a/0x1f0\n[  567.891275]  tcp_sendmsg_locked+0x6b3/0xf30\n[  567.891280]  tcp_sendmsg+0x29/0x40\n[  567.891285]  sock_sendmsg+0x63/0x70\n[  567.891290] Allocated by task 5678:\n[  567.891295]  kmalloc_trace+0x67/0x200\n[  567.891300]  sk_stream_alloc_skb+0x12f/0x1f0",
+    "question": "OLK-6.6: KASAN slab-out-of-bounds write in skb_put -> tcp_send_mss. nginx process. Write of size 1 beyond skb allocation.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "SKB tail overflow: tcp_send_mss computed MSS incorrectly causing skb_put to write 1 byte beyond the allocated skb. Likely triggered by non-standard MTU or GRO/TSO configuration interaction.",
+    "notes": "SKB out-of-bounds — TCP MSS calculation bug"
+  },
+  {
+    "id": "panic-001",
+    "category": "panic",
+    "kernel_version": "OLK-5.10",
+    "expected_route": "kernel",
+    "expected_fault_kind": "panic",
+    "raw_input": "[    1.234567] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(254,0)\n[    1.234570] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 5.10.0-153.oe2203sp3.x86_64 #1\n[    1.234575] Call Trace:\n[    1.234580]  panic+0x10c/0x26f\n[    1.234585]  mount_block_root+0x193/0x220\n[    1.234590]  mount_root+0x15a/0x180\n[    1.234595]  prepare_namespace+0x148/0x190\n[    1.234600]  kernel_init_freeable+0x318/0x360\n[    1.234605]  kernel_init+0xe/0x120\n[    1.234610]  ret_from_fork+0x1f/0x30",
+    "question": "Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(254,0). OLK-5.10.",
+    "expected_commit_hashes": [
+      "79b4e61657c682ac2809a670aea153d95b2e4e24",
+      "dba19fb8c8265bd66b689403c62ba87e74382425"
+    ],
+    "expected_bug_ids": [1291],
+    "ground_truth_root_cause": "Boot-time panic: VFS cannot find root block device (254,0 = dm-0, typically LVM). Root cause: missing dm/LVM driver in initramfs, or UUID/label mismatch in grub/dracut config after kernel update.",
+    "notes": "Boot failure: missing root device in initramfs"
+  },
+  {
+    "id": "panic-002",
+    "category": "panic",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "panic",
+    "raw_input": "[12345.678901] BUG: kernel NULL pointer dereference, address: 0000000000000068\n[12345.678905] #PF: supervisor read access in kernel mode\n[12345.678908] #PF: error_code(0x0000) - not-present page\n[12345.678910] Oops: 0000 [#1] SMP KASAN\n[12345.678915] CPU: 1 PID: 4567 Comm: kworker/u4:2 Not tainted 6.6.0-28.0.0.34.oe2403.x86_64\n[12345.678920] RIP: 0010:ext4_writepages+0x2a3/0xe10\n[12345.678925] Call Trace:\n[12345.678930]  <TASK>\n[12345.678935]  ext4_writepages+0x2a3/0xe10\n[12345.678940]  do_writepages+0x51/0x120\n[12345.678945]  __writeback_single_inode+0x5c/0x2c0\n[12345.678950]  writeback_sb_inodes+0x1ea/0x4b0\n[12345.678955]  __writeback_inodes_wb+0x5d/0xb0",
+    "question": "OLK-6.6: NULL pointer dereference at 0x68 in ext4_writepages+0x2a3. kworker process. KASAN enabled. Filesystem writeback path.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "NULL pointer dereference in ext4 writeback: ext4_writepages accesses a field at offset 0x68 of a NULL pointer — likely a freed/invalid inode or superblock pointer. Possibly triggered by concurrent unmount or disk error.",
+    "notes": "ext4 writeback NULL deref — possible use-after-free in inode lifecycle"
+  },
+  {
+    "id": "hardware-001",
+    "category": "hardware",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "hardware",
+    "expected_fault_kind": "hardlockup",
+    "raw_input": "[98765.100000] mce: CPU 12: Machine Check Exception: 5 Bank 5: bc000000000000c8\n[98765.100005] mce: RIP 10:<ffffffff81234567> {_raw_spin_lock+0x7/0x40}\n[98765.100010] mce: TSC 1234567890 ADDR 0xffff8800deadbeef MISC 0x8c\n[98765.100015] mce: PROCESSOR 0:60663 TIME 1716134400 SOCKET 0 APIC 0x18\n[98765.100020] EDAC MC0: 1 CE memory read error on CPU_SrcID#0_Ha#0_Chan#0_DIMM#0 (csrow0, channel 0, label \"\"): 0x00000000000c0000 0x00000000000000c8\n[98765.100025] Hardware Error: Machine check: Corrected error, no action required.\n[98765.100030] Tainted: M    6.6.0-28.0.0.34.oe2403.x86_64 #1",
+    "question": "OLK-6.6: Machine Check Exception on CPU 12, Bank 5. EDAC reports Corrected Error on DIMM CPU_SrcID#0_Ha#0_Chan#0_DIMM#0. Tainted: M. System occasionally reboots.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "Hardware memory error: MCE on Bank 5 (Memory Controller) with EDAC corrected error on DIMM slot CPU_SrcID#0_Ha#0_Chan#0_DIMM#0. CE → CE trend likely becoming UE. Recommend: monitor CE rate, schedule DIMM replacement if CE count is increasing.",
+    "notes": "MCE + EDAC corrected error — hardware route required, NOT kernel commit search"
+  },
+  {
+    "id": "hardware-002",
+    "category": "hardware",
+    "kernel_version": "OLK-5.10",
+    "expected_route": "hardware",
+    "expected_fault_kind": "hardlockup",
+    "raw_input": "[543210.987654] mce: CPU 0: Machine Check Exception: 5 Bank 1: b200000000000400\n[543210.987660] mce: RIP 10:<ffffffff81012345> {native_apic_mem_write+0x5/0x10}\n[543210.987665] EDAC MC0: 1 UE memory read error on CPU_SrcID#0_Ha#0_Chan#1_DIMM#1\n[543210.987670] EDAC MC0: UE row 1, channel-a= 1 channel-b= 1 labels \"\": 0x00000000000c0000 0x00000000000000c8\n[543210.987675] Hardware Error: Machine check: Uncorrected error, action required.\n[543210.987680] Kernel panic - not syncing: Fatal Machine check\n[543210.987685] Tainted: M    5.10.0-153.oe2203sp3.x86_64 #1",
+    "question": "OLK-5.10: Fatal Machine Check, EDAC Uncorrected Error on DIMM Chan#1_DIMM#1. System panicked. Tainted: M. How to diagnose?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "Fatal MCE caused by EDAC Uncorrected Error (UE) on DIMM Chan#1_DIMM#1. UE = multi-bit ECC failure that ECC cannot correct → hardware-level data corruption → mandatory panic. Action: replace DIMM Chan#1_DIMM#1 immediately.",
+    "notes": "Fatal MCE + EDAC UE — definitive hardware failure (DIMM replacement required)"
+  },
+  {
+    "id": "rcu-001",
+    "category": "lockup",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "rcu_stall",
+    "raw_input": "[23456.789012] rcu: INFO: rcu_sched self-detected stall on CPU\n[23456.789015] rcu: \t0-...!: (5251 ticks this GP) idle=9b6/1/0x4000000000000000 softirq=4567/4568 fqs=2625\n[23456.789020] rcu: \t(t=5251 jiffies g=12345 q=87654 ncpus=8)\n[23456.789025] rcu: rcu_sched kthread timer wakeup didn't happen for 21025 jiffies!\n[23456.789030] Task dump for CPU 0:\n[23456.789035] swapper/0       R  running task        0     0      0 0x0000000a\n[23456.789040] Call Trace:\n[23456.789045]  <IRQ>\n[23456.789050]  rcu_dump_cpu_stacks+0x9e/0xd0\n[23456.789055]  rcu_sched_clock_irq+0x803/0xac0",
+    "question": "OLK-6.6: RCU sched stall on CPU 0, 5251 ticks. rcu_sched kthread timer didn't fire for 21025 jiffies. How to investigate?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "RCU stall on CPU 0 — CPU is not passing through quiescent states for 5251 ticks (~52s). Root cause: long-running interrupt handler, disabled preemption in softirq, or BPF program consuming CPU without yielding.",
+    "notes": "RCU sched stall — CPU preemption disabled or long interrupt"
+  },
+  {
+    "id": "lockdep-001",
+    "category": "oops",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "lockdep",
+    "raw_input": "[78901.234567] ======================================================\n[78901.234570] WARNING: possible circular locking dependency detected\n[78901.234575] 6.6.0-28.0.0.34.oe2403.x86_64 #1 Not tainted\n[78901.234580] ------------------------------------------------------\n[78901.234585] kworker/0:1/45 is trying to acquire lock:\n[78901.234590] ffff888100000000 (&sb->s_type->i_mutex_key#9){+.+.}-{3:3}, at: ext4_evict_inode+0x16c/0x6f0\n[78901.234595] but task is holding lock:\n[78901.234600] ffff888100001000 (jbd2_handle){++++}-{0:0}, at: start_this_handle+0x1c4/0x4e0\n[78901.234605] which lock already depends on the new lock.",
+    "question": "OLK-6.6: lockdep detected circular locking dependency: jbd2_handle -> i_mutex in ext4_evict_inode. kworker/0:1.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "Circular lock dependency: jbd2 journal handle held while acquiring inode mutex in ext4_evict_inode. Lockdep detects potential deadlock between journal and eviction paths. Likely triggered by a concurrent truncate or unlink under journal pressure.",
+    "notes": "ext4 lockdep: jbd2 handle vs i_mutex ordering"
+  },
+  {
+    "id": "change-001",
+    "category": "regression",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "change",
+    "expected_fault_kind": "generic",
+    "raw_input": "After upgrading kernel from 6.6.0-20 to 6.6.0-28, nginx starts dropping connections with TCP RST. No firewall changes. The issue appeared immediately after the upgrade worked fine yesterday.",
+    "question": "After upgrading OLK-6.6 kernel from 6.6.0-20 to 6.6.0-28, nginx TCP connections fail with RST. Worked fine yesterday before the upgrade.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "Kernel regression: TCP behavior changed between 6.6.0-20 and 6.6.0-28. Possible causes: net/tcp socket option handling change, conntrack module behavior change, or TCP early RST on SYN backlog exhaustion. Check kernel changelog between versions.",
+    "notes": "Change route: regression after kernel upgrade — should search commit changelog"
+  },
+  {
+    "id": "io-hang-001",
+    "category": "io_hang",
+    "kernel_version": "OLK-5.10",
+    "expected_route": "kernel",
+    "expected_fault_kind": "oops",
+    "raw_input": "[567890.123456] INFO: task kworker/u8:3:12345 blocked for more than 120 seconds.\n[567890.123460] Not tainted 5.10.0-153.oe2203sp3.x86_64 #1\n[567890.123465] Call Trace:\n[567890.123470]  <TASK>\n[567890.123475]  blk_mq_get_tag+0x14b/0x200\n[567890.123480]  blk_mq_bio_to_request+0x123/0x250\n[567890.123485]  nvme_queue_rq+0x89/0x1c0\n[567890.123490]  blk_mq_dispatch_rq_list+0x1b7/0x490\n[567890.123495] [  pid  ] uid  tgid total_vm      rss pgtables_bytes swapents oom_score_adj name\n[567890.123500] [  12345]   0 12345   12288     2048      114688        0           0 kworker/u8:3\n[567890.123505] NVMe device nvme0: I/O timeout, resetting controller",
+    "question": "OLK-5.10: kworker blocked 120s in blk_mq_get_tag -> nvme_queue_rq. NVMe controller reset. IO hung on NVMe device.",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "NVMe controller I/O timeout causing block queue stall: blk_mq_get_tag blocked waiting for request tags because NVMe queue is full (controller not draining). Root cause: NVMe controller firmware issue, PCIe link instability, or high queue depth under sustained write load.",
+    "notes": "NVMe I/O hang — blk-mq tag exhaustion after controller timeout"
+  }
+]

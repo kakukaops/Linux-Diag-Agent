@@ -107,20 +107,37 @@ v2 全部 6 个新模块的详设文档已起草完毕（M9-M12 + M22 + M23，�
 
 ---
 
-## 7. v2.0 实测 baseline（2026-05-25）
-
-| 指标 | 值 |
-|---|---|
-| Recall@10（含 ground_truth=空 trivially-pass） | 59.5% |
-| Recall@10（仅 OOM 类别真值）| 0% — BM25 把期望 commit 排到 #142–#2203 |
-| Route accuracy | 92.9% (oom-002 + io-hang-001 → unknown，本次已修) |
-| Fault-kind accuracy | 57.1% |
-| Root-cause accuracy（LLM judge） | 41.7% (5/12 judged) |
-| Verdicts | diagnosed 12 / budget_exhausted 1 / max_iter_reached 1 / ERROR 1 |
-| 平均耗时 | 340s/case (5.7 min) |
-| 平均 tokens | 138K/case |
+## 7. v2.0 实测 baseline
 
 数据集：`eval/data/cases_v2.json` 15 例；模型：openrouter `deepseek/deepseek-v4-flash`；rate 600 rpm（付费 tier）。
+
+### v2.0 baseline 演进（同一数据集多次跑）
+
+| 跑次 | 配置 | Wall time | ERROR | diagnosed | Recall@10 | Route acc | Root-cause acc | 备注 |
+|---|---|---|---|---|---|---|---|---|
+| baseline (初次) | serial | 75 min | 6.7% (1) | 12 | 59.5% | 92.9% | 41.7% (5/12) | 初版 |
+| post P0-P2 fix | concurrency=3 | 37.5 min | 33% (5) | 6 | 65.0% | 100% | 80% (5/7) | 暴露 catch-all 包装 bug |
+| **final** (2026-05-25) | **concurrency=3 + bug fix** | **35.7 min** | **6.7% (1)** | **9** | **59.5%** | **100%** | **55.6% (5/9)** | catch-all bug 修复后稳定 |
+
+**关键指标变化**（baseline → final）：
+- Wall time **75 min → 35.7 min**（2× 加速，case 级并发 + lore 限流共享）
+- Route accuracy **92.9% → 100%**（oom-002 / io-hang-001 路由修复）
+- 同样 5 个 root-cause 判正确，分母从 12 → 9 因更多 case 走到 diagnosed
+- ERROR 率回到 baseline 水平（修复 catch-all 包装 bug 后）
+
+### 残留 ERROR：oom-001
+1/15 = 6.7% 是 OpenRouter free-tier 实际可用上限。case 跑 9.4 min 后远端 stream 断开（`"Network connection lost"`）— 不可恢复，stream 已消费一半无法续传。这是上游瞬态，非本地代码问题。
+
+### 按类别 recall（最终）
+| 类别 | n | recall | 评价 |
+|---|---|---|---|
+| oom | 2 | **0%** | BM25 keyword 错配（已识别为 v2.1 P0）|
+| lockup | 3 | 33% | softlockup × 2 低，rcu 100% |
+| oops | 3 | 67% | kasan + lockdep |
+| panic | 2 | 67% | panic-001 1/3，panic-002 1/1 |
+| hardware | 2 | 100% | trivially-pass（ground_truth 空）|
+| regression | 1 | 100% | change-001 命中 |
+| io_hang | 1 | 100% | 修了 P1a 后命中 |
 
 ## 8. v2.0 → v2.1 backlog（基于 P1b judge reasoning 分析）
 
@@ -144,6 +161,8 @@ LLM judge 否定的 7 例失败模式归为 3 类：
 | Cross-graph commit 注入 | `retrieval/engine.py` `_inject_linked_commits` | LKML / CVE 路命中 → 自动 surface 关联 commit（用 33K + 401 link 数据）|
 | kernel.md prompt 加硬件/存储备选 | `agent/react/prompts/kernel.md` | 修 v2.1 backlog A 模式 |
 | linker 数据回填 link_commit_message 33,099 行 | DB only | 0 orphan，全部 link_trailer 高置信 |
+| eval 优化：case 级并发 + lore 共享限流 + `--case-ids` `--merge-summary` | `eval/runner_v2.py` + `ingest/lkml/fetcher.py` | wall time 75 min → 35.7 min（2×）|
+| **关键 bug 修复：openai_compat catch-all 包装 → pass-through** | `llm/provider/openai_compat.py` | ERROR 33% → 6.7%；网络瞬态可重试 |
 
 ---
 

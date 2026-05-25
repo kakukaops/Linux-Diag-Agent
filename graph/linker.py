@@ -211,19 +211,23 @@ def _link_olk_upstream(conn: Any, report: LinkReport) -> None:
     """)
     rows = conn.execute(sql).fetchall()
     for olk_hash, upstream_sha, _ in rows:
-        # The upstream commit isn't in our DB yet — that's fine (linux-stable pull may lag).
-        # Record a stub so the graph linker can surface the bridge.
+        # The upstream commit isn't in our DB yet — record a stub so the graph
+        # linker can surface the bridge.  commit_date uses epoch as sentinel.
         try:
+            conn.execute(text("SAVEPOINT stub_ins"))
             conn.execute(
                 text("""
-                    INSERT INTO kernel_commit (hash, subject, origin, affected_versions)
-                    VALUES (:h, :s, 'mainline', ARRAY['mainline'])
+                    INSERT INTO kernel_commit
+                        (hash, subject, commit_date, origin, affected_versions)
+                    VALUES (:h, :s, '1970-01-01'::timestamptz, 'mainline', ARRAY['mainline'])
                     ON CONFLICT (hash) DO NOTHING
                 """),
                 {"h": upstream_sha, "s": f"[stub upstream for OLK {olk_hash[:12]}]"},
             )
+            conn.execute(text("RELEASE SAVEPOINT stub_ins"))
             report.upstream_bridged += 1
         except Exception as exc:
+            conn.execute(text("ROLLBACK TO SAVEPOINT stub_ins"))
             report.errors.append(f"upstream bridge {upstream_sha}: {exc}")
 
 
@@ -242,7 +246,7 @@ def link_nvd_commits(engine: "Engine", *, batch_size: int = 500) -> int:
         SELECT cve_id, fix_commits
           FROM cve
          WHERE fix_commits IS NOT NULL
-           AND jsonb_array_length(fix_commits) > 0
+           AND json_array_length(fix_commits) > 0
          LIMIT :limit
     """)
     with engine.begin() as conn:

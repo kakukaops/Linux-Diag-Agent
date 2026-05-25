@@ -33,10 +33,10 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
                subject,
                body,
                author_name,
-               author_date,
+               commit_date,
                ts_rank_cd(body_tsv, query) AS score
           FROM kernel_commit,
-               to_tsquery('english', :q) AS query
+               websearch_to_tsquery('english', :q) AS query
          WHERE body_tsv @@ query
            {version_filter}
          ORDER BY score DESC
@@ -58,7 +58,7 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
             commit_hash=row.hash,
             metadata={
                 "author": row.author_name,
-                "date": str(row.author_date) if row.author_date else None,
+                "date": str(row.commit_date) if row.commit_date else None,
             },
         )
         for row in rows
@@ -66,5 +66,6 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
 
 
 def _to_tsquery(tokens: list[str]) -> str:
-    clean = [t.replace("'", "").replace(":", "") for t in tokens if len(t) >= 2]
-    return " | ".join(clean[:10]) if clean else ""
+    words = [w for t in tokens for w in t.split()]
+    clean = [w.replace("'", "") for w in words if len(w) >= 2]
+    return " OR ".join(clean[:15]) if clean else ""

@@ -23,7 +23,7 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
             if query.cve_ids:
                 rows = conn.execute(
                     text("""
-                        SELECT cve_id, description, severity, cvss_score, published_at
+                        SELECT cve_id, description, cvss_v3_score, published_at
                           FROM cve
                          WHERE cve_id = ANY(:ids)
                     """),
@@ -37,13 +37,12 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
                         body=(row.description or "")[:500],
                         cve_id=row.cve_id,
                         metadata={
-                            "severity": row.severity,
-                            "cvss_score": str(row.cvss_score or ""),
+                            "cvss_score": str(row.cvss_v3_score or ""),
                             "published_at": str(row.published_at or ""),
                         },
                     ))
 
-            # BM25 fallback for keyword hits
+            # BM25 fallback via pre-built body_tsv GIN index
             if len(results) < query.limit_per_route:
                 tsq = _to_tsquery(query.keywords or query.raw_question.split())
                 if tsq:
@@ -52,15 +51,11 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
                         text("""
                             SELECT cve_id,
                                    description,
-                                   severity,
-                                   cvss_score,
-                                   ts_rank_cd(
-                                       to_tsvector('english', coalesce(description,'')),
-                                       query
-                                   ) AS score
+                                   cvss_v3_score,
+                                   ts_rank_cd(body_tsv, query) AS score
                               FROM cve,
-                                   to_tsquery('english', :q) AS query
-                             WHERE to_tsvector('english', coalesce(description,'')) @@ query
+                                   websearch_to_tsquery('english', :q) AS query
+                             WHERE body_tsv @@ query
                              ORDER BY score DESC
                              LIMIT :lim
                         """),
@@ -73,7 +68,7 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
                             title=row.cve_id,
                             body=(row.description or "")[:500],
                             cve_id=row.cve_id,
-                            metadata={"severity": row.severity},
+                            metadata={"cvss_score": str(row.cvss_v3_score or "")},
                         ))
     except Exception as exc:
         logger.error("CVE recall SQL failed: %s", exc)
@@ -82,5 +77,6 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
 
 
 def _to_tsquery(tokens: list[str]) -> str:
-    clean = [t.replace("'", "").replace(":", "") for t in tokens if len(t) >= 2]
-    return " | ".join(clean[:10]) if clean else ""
+    words = [w for t in tokens for w in t.split()]
+    clean = [w.replace("'", "") for w in words if len(w) >= 2]
+    return " OR ".join(clean[:15]) if clean else ""

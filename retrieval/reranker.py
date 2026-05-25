@@ -14,8 +14,9 @@ from retrieval.schema import Evidence, RetrievalQuery
 
 logger = logging.getLogger(__name__)
 
-RERANK_THRESHOLD = 10
+RERANK_THRESHOLD = 1   # always rerank (raised candidate pool from 70 → 350 makes BM25 ordering unreliable)
 RERANK_TOP_K = 10
+_RERANK_INPUT_CAP = 60  # max items sent to LLM; LLM context easily fits 60 short snippets
 
 _RERANK_PROMPT = """\
 You are a Linux kernel expert. Given the question and a list of retrieved items, \
@@ -53,11 +54,12 @@ def _llm_rerank(query: RetrievalQuery, items: list[Evidence]) -> list[Evidence]:
     from configs.config import get_config
 
     cfg = get_config()
-    provider = get_provider(cfg.llm.navigator.provider)
+    provider = get_provider(cfg.llm.navigator.backend)
 
+    candidates = items[:_RERANK_INPUT_CAP]
     item_lines = "\n".join(
         f"[{i}] ({e.route.value}) {e.title}: {e.body[:200]}"
-        for i, e in enumerate(items)
+        for i, e in enumerate(candidates)
     )
     req = ChatRequest(
         messages=[
@@ -74,11 +76,16 @@ def _llm_rerank(query: RetrievalQuery, items: list[Evidence]) -> list[Evidence]:
         stream=False,
     )
     resp = provider.chat(req)
-    content = re.sub(r"^```(?:json)?\s*|\s*```$", "", (resp.content or "").strip())
-    scores: list[int] = json.loads(content)
+    raw = (resp.content or "").strip()
+    if not raw:
+        raise ValueError("Empty rerank response")
+    # Strip code fences then extract just the JSON array (LLM may append explanations)
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+    m = re.search(r"\[[\d,\s]+\]", raw)
+    scores: list[int] = json.loads(m.group(0) if m else raw)
 
-    if len(scores) != len(items):
-        raise ValueError(f"Score length mismatch: {len(scores)} vs {len(items)}")
+    if len(scores) != len(candidates):
+        raise ValueError(f"Score length mismatch: {len(scores)} vs {len(candidates)}")
 
-    ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
+    ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
     return [item for _, item in ranked[:RERANK_TOP_K]]

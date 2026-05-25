@@ -15,23 +15,18 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
     from storage.pg.engine import get_engine
 
     engine = get_engine()
-    tsq = _to_tsquery(query.keywords or query.raw_question.split())
+    tsq = _keywords_str(query.keywords or query.raw_question.split())
     if not tsq:
         return []
 
     sql = text("""
-        SELECT sc.crash_id,
+        SELECT sc.syzbot_id,
                sc.title,
-               sc.call_trace,
-               sc.reproducer_url,
-               ts_rank_cd(
-                   to_tsvector('english', coalesce(sc.title,'') || ' ' || coalesce(sc.call_trace,'')),
-                   query
-               ) AS score
+               sc.stack_trace,
+               ts_rank_cd(body_tsv, query) AS score
           FROM syzbot_crash sc,
-               to_tsquery('english', :q) AS query
-         WHERE to_tsvector('english', coalesce(sc.title,'') || ' ' || coalesce(sc.call_trace,''))
-               @@ query
+               websearch_to_tsquery('english', :q) AS query
+         WHERE body_tsv @@ query
          ORDER BY score DESC
          LIMIT :lim
     """)
@@ -47,14 +42,14 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
             route=RouteTag.syzbot,
             score=float(row.score or 0),
             title=row.title or "",
-            body=(row.call_trace or "")[:500],
-            crash_id=row.crash_id,
-            url=row.reproducer_url or "",
+            body=(row.stack_trace or "")[:500],
+            crash_id=row.syzbot_id,
         )
         for row in rows
     ]
 
 
-def _to_tsquery(tokens: list[str]) -> str:
-    clean = [t.replace("'", "").replace(":", "") for t in tokens if len(t) >= 2]
-    return " | ".join(clean[:10]) if clean else ""
+def _keywords_str(tokens: list[str]) -> str:
+    words = [w for t in tokens for w in t.split()]
+    clean = [w.replace("'", "") for w in words if len(w) >= 2]
+    return " OR ".join(clean[:15]) if clean else ""

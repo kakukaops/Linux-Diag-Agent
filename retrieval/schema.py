@@ -34,7 +34,7 @@ class RetrievalQuery(BaseModel):
         default_factory=lambda: list(RouteTag),
         description="Routes to fire. Defaults to all 7.",
     )
-    limit_per_route: int = 20
+    limit_per_route: int = 50
 
 
 class Evidence(BaseModel):

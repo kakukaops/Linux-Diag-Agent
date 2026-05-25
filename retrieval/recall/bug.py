@@ -21,18 +21,14 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
 
     sql = text("""
         SELECT b.id,
-               b.summary,
+               b.title,
                b.description,
                b.status,
                b.severity,
-               ts_rank_cd(
-                   to_tsvector('english', coalesce(b.summary,'') || ' ' || coalesce(b.description,'')),
-                   query
-               ) AS score
+               ts_rank_cd(body_tsv, query) AS score
           FROM bug b,
-               to_tsquery('english', :q) AS query
-         WHERE to_tsvector('english', coalesce(b.summary,'') || ' ' || coalesce(b.description,''))
-               @@ query
+               websearch_to_tsquery('english', :q) AS query
+         WHERE body_tsv @@ query
          ORDER BY score DESC
          LIMIT :lim
     """)
@@ -47,7 +43,7 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
         Evidence(
             route=RouteTag.bug,
             score=float(row.score or 0),
-            title=row.summary or "",
+            title=row.title or "",
             body=(row.description or "")[:500],
             bug_id=row.id,
             metadata={"status": row.status, "severity": row.severity},
@@ -57,5 +53,6 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
 
 
 def _to_tsquery(tokens: list[str]) -> str:
-    clean = [t.replace("'", "").replace(":", "") for t in tokens if len(t) >= 2]
-    return " | ".join(clean[:10]) if clean else ""
+    words = [w for t in tokens for w in t.split()]
+    clean = [w.replace("'", "") for w in words if len(w) >= 2]
+    return " OR ".join(clean[:15]) if clean else ""

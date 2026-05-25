@@ -63,7 +63,9 @@ fi
 
 # ── Phase 1: Network sources (parallel) ─────────────────────────────────
 log "Phase 1: network sources (parallel)"
-(run_py ingest.lkml       incremental 2>&1 | sed 's/^/[lkml] /'       ) &  PID_LKML=$!
+# LKML: ADR-025 — reference-driven backfill (incremental by checkpoint: only
+# fetches messages newly referenced by commits since last run). Not bulk.
+(run_py ingest.lkml       backfill_referenced 2>&1 | sed 's/^/[lkml] /'  ) &  PID_LKML=$!
 (run_py ingest.bugzilla   incremental 2>&1 | sed 's/^/[bugzilla] /'   ) &  PID_BZ=$!
 (run_py ingest.syzbot     incremental 2>&1 | sed 's/^/[syzbot] /'     ) &  PID_SZ=$!
 (run_py ingest.nvd        incremental 2>&1 | sed 's/^/[nvd] /'        ) &  PID_NVD=$!

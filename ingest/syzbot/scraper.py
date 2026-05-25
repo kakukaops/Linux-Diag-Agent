@@ -55,8 +55,13 @@ class SyzbotScraper:
         """Fetch the upstream crash list. Returns list of {id, title, status}."""
         html = self._get(f"{_BASE}/upstream")
         soup = BeautifulSoup(html, "html.parser")
+        # Pick the largest list_table — that's the crash table (manager table is smaller)
+        tables = soup.select("table.list_table")
+        if not tables:
+            return []
+        crash_table = max(tables, key=lambda t: len(t.find_all("tr")))
         crashes = []
-        for row in soup.select("table.list tr"):
+        for row in crash_table.find_all("tr"):
             cols = row.find_all("td")
             if not cols:
                 continue
@@ -64,7 +69,8 @@ class SyzbotScraper:
             if not link:
                 continue
             href = link.get("href", "")
-            crash_id = href.split("id=")[-1] if "id=" in href else ""
+            # URL format: /bug?extid=<id>
+            crash_id = href.split("extid=")[-1] if "extid=" in href else ""
             if not crash_id:
                 continue
             crashes.append({
@@ -76,13 +82,14 @@ class SyzbotScraper:
 
     def fetch_crash_detail(self, crash_id: str) -> SyzbotCrash | None:
         try:
-            html = self._get(f"{_BASE}/bug?id={crash_id}")
+            html = self._get(f"{_BASE}/bug?extid={crash_id}")
         except Exception as exc:
             logger.warning("[syzbot] detail fetch failed %s: %s", crash_id, exc)
             return None
 
         soup = BeautifulSoup(html, "html.parser")
-        title_tag = soup.find("h2") or soup.find("h1")
+        # syzbot uses <title> for the crash name; <h1> is just "syzbot"
+        title_tag = soup.find("title") or soup.find(class_="title")
         title = title_tag.get_text(strip=True) if title_tag else crash_id
 
         crash = SyzbotCrash(syzbot_id=crash_id, title=title)

@@ -59,6 +59,7 @@ class SyzbotIngester(BaseIngester):
             VALUES
                 (:sid, :title, :status, :fix, :trace, :sig)
             ON CONFLICT (syzbot_id) DO UPDATE SET
+                title = EXCLUDED.title,
                 status = EXCLUDED.status,
                 fix_commit = COALESCE(EXCLUDED.fix_commit, syzbot_crash.fix_commit),
                 stack_signature = COALESCE(EXCLUDED.stack_signature, syzbot_crash.stack_signature)

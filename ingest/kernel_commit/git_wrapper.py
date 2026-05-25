@@ -78,13 +78,12 @@ class GitRepo:
         ]
         logger.info("[git] log %s (since %s)", branch, since_sha or "beginning")
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True,
-                                    check=True, timeout=3600)
+            result = subprocess.run(cmd, capture_output=True, check=True, timeout=3600)
         except subprocess.CalledProcessError as e:
             logger.error("[git] log failed: %s", e.stderr[:400])
             return
 
-        output = result.stdout
+        output = result.stdout.decode("utf-8", errors="replace")
         records = output.split("\x01")
         batch: list[RawCommit] = []
 
@@ -127,8 +126,17 @@ def _parse_record(record: str) -> RawCommit | None:
     if len(parts) < 6:
         return None
 
-    commit_hash = parts[0].strip()
-    if not commit_hash or len(commit_hash) < 7:
+    # parts[0] may be prefixed with --name-only file paths from the previous
+    # commit (they appear before the next commit's hash in the raw stream).
+    # Extract the actual 40-char SHA from the last non-empty line.
+    raw_hash_field = parts[0].strip()
+    commit_hash = ""
+    for line in reversed(raw_hash_field.splitlines()):
+        line = line.strip()
+        if len(line) == 40 and all(c in "0123456789abcdef" for c in line):
+            commit_hash = line
+            break
+    if not commit_hash:
         return None
 
     author_email = parts[1].strip()

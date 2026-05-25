@@ -72,7 +72,7 @@ class BugzillaIngester(BaseIngester):
     def _fetch_batch(self, since: str, offset: int) -> list[dict]:
         time.sleep(_REQUEST_DELAY_S)
         params = {
-            "changed_after": since,
+            "last_change_time": since[:10],  # Bugzilla REST expects YYYY-MM-DD
             "limit": _BATCH_SIZE,
             "offset": offset,
             "include_fields": ",".join([

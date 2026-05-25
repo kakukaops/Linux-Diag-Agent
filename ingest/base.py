@@ -92,7 +92,7 @@ class CheckpointStore:
                  rows_inserted, rows_updated, checkpoint, error_message)
             VALUES
                 (:src, :started, :finished, :status,
-                 :inserted, :updated, :checkpoint::jsonb, :err)
+                 :inserted, :updated, CAST(:checkpoint AS jsonb), :err)
         """)
         with self._engine.connect() as conn:
             conn.execute(sql, {

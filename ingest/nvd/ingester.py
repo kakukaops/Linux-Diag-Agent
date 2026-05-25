@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -16,10 +16,11 @@ from ingest.nvd.extractor import extract_fix_commits
 logger = logging.getLogger(__name__)
 
 _NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-_LINUX_CPE = "cpe:2.3:o:linux:linux_kernel:*"
 _PAGE_SIZE = 2000
-_DELAY_S = 6.0   # NVD: 5 req/30s without API key → ~6s per request
+_DELAY_S = 6.0      # NVD: 5 req/30s without API key → ~6s per request
+_MAX_WINDOW = 119   # NVD max date range is 120 days; use 119 to be safe
 _BOOTSTRAP_SINCE = "2024-01-01T00:00:00.000"
+_DT_FMT = "%Y-%m-%dT%H:%M:%S.000"
 
 
 class NvdIngester(BaseIngester):
@@ -41,41 +42,53 @@ class NvdIngester(BaseIngester):
         report: RunReport,
         quarantine: Quarantine,
     ) -> dict[str, Any]:
-        since = checkpoint.get("last_modified", _BOOTSTRAP_SINCE)
-        newest = since
-        start_index = 0
+        since_str = checkpoint.get("last_modified", _BOOTSTRAP_SINCE)
+        now = datetime.now(timezone.utc)
+        window_start = datetime.fromisoformat(since_str.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
+        newest = since_str
 
-        while True:
-            data = self._fetch_page(since, start_index)
-            vulns = data.get("vulnerabilities", [])
-            total = data.get("totalResults", 0)
-            logger.info("[nvd] Fetched %d/%d CVEs (offset %d)", len(vulns), total, start_index)
+        # NVD API max window = 120 days; iterate in chunks
+        while window_start < now:
+            window_end = min(window_start + timedelta(days=_MAX_WINDOW), now)
+            start_index = 0
+            while True:
+                data = self._fetch_page(
+                    window_start.strftime(_DT_FMT),
+                    window_end.strftime(_DT_FMT),
+                    start_index,
+                )
+                vulns = data.get("vulnerabilities", [])
+                total = data.get("totalResults", 0)
+                logger.info("[nvd] window %s→%s: %d/%d CVEs",
+                            window_start.date(), window_end.date(), len(vulns), total)
 
-            for item in vulns:
-                cve_data = item.get("cve", {})
-                try:
-                    row = self._normalize(cve_data)
-                    self._upsert_cve(row, report, quarantine)
-                    lm = cve_data.get("lastModified", "")
-                    if lm > newest:
-                        newest = lm
-                except Exception as exc:
-                    cve_id = cve_data.get("id", "?")
-                    quarantine.put(cve_id, cve_data, str(exc))
-                    report.rows_failed += 1
+                for item in vulns:
+                    cve_data = item.get("cve", {})
+                    try:
+                        row = self._normalize(cve_data)
+                        self._upsert_cve(row, report, quarantine)
+                        lm = cve_data.get("lastModified", "")
+                        if lm > newest:
+                            newest = lm
+                    except Exception as exc:
+                        quarantine.put(cve_data.get("id", "?"), cve_data, str(exc))
+                        report.rows_failed += 1
 
-            start_index += len(vulns)
-            if start_index >= total or not vulns:
-                break
+                start_index += len(vulns)
+                if start_index >= total or not vulns:
+                    break
+
+            window_start = window_end
 
         return {"last_modified": newest}
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=_DELAY_S, max=120))
-    def _fetch_page(self, since: str, start_index: int) -> dict:
+    def _fetch_page(self, start_date: str, end_date: str, start_index: int) -> dict:
         time.sleep(_DELAY_S)
         params: dict = {
-            "virtualMatchString": _LINUX_CPE,
-            "lastModStartDate": since,
+            "keywordSearch": "linux kernel",
+            "lastModStartDate": start_date,
+            "lastModEndDate": end_date,
             "startIndex": start_index,
             "resultsPerPage": _PAGE_SIZE,
         }
@@ -114,19 +127,22 @@ class NvdIngester(BaseIngester):
         import json
         sql = text("""
             INSERT INTO cve (cve_id, published_at, last_modified_at, description,
-                             cvss_v3_score, cvss_v3_vector, references)
+                             cvss_v3_score, cvss_v3_vector, "references", fix_commits)
             VALUES (:cve_id, :published_at, :last_modified_at, :description,
-                    :cvss_v3_score, :cvss_v3_vector, :references::jsonb)
+                    :cvss_v3_score, :cvss_v3_vector, CAST(:references AS jsonb),
+                    CAST(:fix_commits AS jsonb))
             ON CONFLICT (cve_id) DO UPDATE SET
                 last_modified_at = EXCLUDED.last_modified_at,
                 cvss_v3_score = EXCLUDED.cvss_v3_score,
-                description = COALESCE(EXCLUDED.description, cve.description)
+                description = COALESCE(EXCLUDED.description, cve.description),
+                fix_commits = COALESCE(EXCLUDED.fix_commits, cve.fix_commits)
         """)
         try:
             with self._engine.connect() as conn:
                 result = conn.execute(sql, {
                     **row,
                     "references": json.dumps(row["references"]),
+                    "fix_commits": json.dumps(row["fix_commits"]),
                 })
                 conn.commit()
             if result.rowcount > 0:

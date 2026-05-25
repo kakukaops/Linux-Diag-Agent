@@ -1,10 +1,13 @@
 # M4 — Cross-Graph Linker + CodeGraph 集成 设计文档
 
+> **⚠️ 设计规格文档**：本文档为实施前的原始设计规格（定稿于 2026-05-15）。实际实现以代码为准，两者可能存在偏差。如需了解当前实现状态，请阅读对应目录下的 `CLAUDE.md` 和源代码。
+
+
 | 字段 | 值 |
 |------|---|
 | 模块编号 | M4 |
 | 状态 | Design Locked（待实施） |
-| 关联文档 | [PRD.md](../PRD.md) · [Architecture.md](../Architecture.md) · [M1](M1_llm_provider.md) · [M2](M2_storage_schema.md) · [M3](M3_ingestion.md) · [KnowledgeGraph_Overview](../KnowledgeGraph_Overview.md) |
+| 关联文档 | [PRD.md](../PRD.md) · [Architecture.md](../Architecture.md) · [M1](M1_llm_provider.md) · [M2](M2_storage_schema.md) · [M3](M3_ingestion.md) · [Architecture](../Architecture.md) |
 | 关联 ADR | [ADR-008](../adr/ADR-008-reuse-codesearch.md) · [ADR-009](../adr/ADR-009-multi-version-via-codesearch-repos.md) · [ADR-012](../adr/ADR-012-codesearch-http-transport.md) · [ADR-018](../adr/ADR-018-commit-source-olk-kernel.md) |
 | 最后更新 | 2026-05-14 |
 

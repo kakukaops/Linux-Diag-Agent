@@ -5,7 +5,7 @@
 | 产品名 | Linux-Diag-Agent |
 | 版本 | v1 |
 | 状态 | Design Locked（待实施，2026-05-15 同步全部 ADR）|
-| 关联文档 | [Architecture.md](Architecture.md) · [ProjectPlan.md](ProjectPlan.md) · [KnowledgeGraph_Overview.md](KnowledgeGraph_Overview.md) · [adr/](adr/) |
+| 关联文档 | [Architecture.md](Architecture.md) · [ProjectPlan.md](ProjectPlan.md) · [Architecture.md](Architecture.md) · [adr/](adr/) |
 | 最后更新 | 2026-05-15 |
 
 ---

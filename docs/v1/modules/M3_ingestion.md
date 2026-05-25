@@ -1,10 +1,13 @@
 # M3 — Ingestion 层 设计文档
 
+> **⚠️ 设计规格文档**：本文档为实施前的原始设计规格（定稿于 2026-05-15）。实际实现以代码为准，两者可能存在偏差。如需了解当前实现状态，请阅读对应目录下的 `CLAUDE.md` 和源代码。
+
+
 | 字段 | 值 |
 |------|---|
 | 模块编号 | M3 |
 | 状态 | Design Locked（待实施） |
-| 关联文档 | [PRD.md](../PRD.md) · [Architecture.md](../Architecture.md) · [M1](M1_llm_provider.md) · [M2](M2_storage_schema.md) · [KnowledgeGraph_Overview](../KnowledgeGraph_Overview.md) |
+| 关联文档 | [PRD.md](../PRD.md) · [Architecture.md](../Architecture.md) · [M1](M1_llm_provider.md) · [M2](M2_storage_schema.md) · [Architecture](../Architecture.md) |
 | 关联 ADR | [ADR-007](../adr/ADR-007-data-dir-in-repo.md) · [ADR-008](../adr/ADR-008-reuse-codesearch.md) · [ADR-010](../adr/ADR-010-lkml-2y-bootstrap.md) · [ADR-011](../adr/ADR-011-bugzilla-kernel-org-only.md) |
 | 最后更新 | 2026-05-14 |
 

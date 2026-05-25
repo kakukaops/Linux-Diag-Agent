@@ -1,12 +1,14 @@
 # ADR-010 — LKML 首次 bootstrap 窗口 = 2024-05 起 2 年
 
+> **⚠️ 已被取代（2026-05-21）**：本 ADR 的"LKML bulk 摄入"决策被 [v2 ADR-025](../../v2/adr/ADR-025-knowledge-data-online-default.md) 取代。实测表明 bulk 按 list+日期窗口摄入对 `link_commit_message` 几乎无效（85% 引用超窗）且耗时 34.5h。v2 改为 LKML 三层模型（定向抓取 + 懒加载缓存 + lore live search）。
+
 | 字段 | 值 |
 |------|---|
-| 状态 | Accepted |
-| 日期 | 2026-05-14 |
+| 状态 | **Superseded by [ADR-025](../../v2/adr/ADR-025-knowledge-data-online-default.md)** |
+| 日期 | 2026-05-14（2026-05-21 标记取代）|
 | 决策者 | 用户 + Architect |
 | 关联模块 | M3 |
-| 相关 ADR | [ADR-007](ADR-007-data-dir-in-repo.md) · [ADR-008](ADR-008-reuse-codesearch.md) |
+| 相关 ADR | [ADR-007](ADR-007-data-dir-in-repo.md) · [ADR-008](ADR-008-reuse-codesearch.md) · [v2/ADR-025](../../v2/adr/ADR-025-knowledge-data-online-default.md) |
 
 ## 上下文
 

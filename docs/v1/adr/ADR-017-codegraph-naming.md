@@ -91,5 +91,5 @@
 ## 参考
 
 - [ADR-008 复用 codesearch 决策](ADR-008-reuse-codesearch.md)
-- [KnowledgeGraph_Overview](../KnowledgeGraph_Overview.md) — Code Graph 子图叙事来源
+- [Architecture](../Architecture.md) — Code Graph 子图叙事来源
 - codesearch 项目仓库：`/home/mqq/github/codesearch`

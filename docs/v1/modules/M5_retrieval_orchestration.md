@@ -1,10 +1,13 @@
 # M5 — 检索编排层 设计文档
 
+> **⚠️ 设计规格文档**：本文档为实施前的原始设计规格（定稿于 2026-05-15）。实际实现以代码为准，两者可能存在偏差。如需了解当前实现状态，请阅读对应目录下的 `CLAUDE.md` 和源代码。
+
+
 | 字段 | 值 |
 |------|---|
 | 模块编号 | M5 |
 | 状态 | Design Locked（待实施） |
-| 关联文档 | [PRD.md](../PRD.md) · [Architecture.md](../Architecture.md) · [M1](M1_llm_provider.md) · [M2](M2_storage_schema.md) · [M3](M3_ingestion.md) · [M4](M4_cross_graph_linker.md) · [KnowledgeGraph_Overview](../KnowledgeGraph_Overview.md) |
+| 关联文档 | [PRD.md](../PRD.md) · [Architecture.md](../Architecture.md) · [M1](M1_llm_provider.md) · [M2](M2_storage_schema.md) · [M3](M3_ingestion.md) · [M4](M4_cross_graph_linker.md) · [Architecture](../Architecture.md) |
 | 关联 ADR | [ADR-002](../adr/ADR-002-no-reranker.md) · [ADR-004](../adr/ADR-004-claude-code-provider.md) · [ADR-008](../adr/ADR-008-reuse-codesearch.md) · [ADR-013](../adr/ADR-013-m5-retrieval-strategy.md) |
 | 最后更新 | 2026-05-14 |
 

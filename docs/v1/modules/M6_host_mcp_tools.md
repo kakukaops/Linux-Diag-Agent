@@ -1,10 +1,13 @@
 # M6 — 主机 MCP 工具集 设计文档
 
+> **⚠️ 设计规格文档**：本文档为实施前的原始设计规格（定稿于 2026-05-15）。实际实现以代码为准，两者可能存在偏差。如需了解当前实现状态，请阅读对应目录下的 `CLAUDE.md` 和源代码。
+
+
 | 字段 | 值 |
 |------|---|
 | 模块编号 | M6 |
 | 状态 | Design Locked（待实施） |
-| 关联文档 | [PRD.md](../PRD.md) · [Architecture.md](../Architecture.md) · [M5](M5_retrieval_orchestration.md) · [M7（待写）] · [KnowledgeGraph_Overview](../KnowledgeGraph_Overview.md) |
+| 关联文档 | [PRD.md](../PRD.md) · [Architecture.md](../Architecture.md) · [M5](M5_retrieval_orchestration.md) · [M7（待写）] · [Architecture](../Architecture.md) |
 | 关联 ADR | [ADR-014](../adr/ADR-014-m6-scope.md) |
 | 最后更新 | 2026-05-14 |
 

@@ -5,7 +5,7 @@
 | 文档类型 | Project Plan |
 | 版本 | v1 |
 | 状态 | Design Locked（待实施，2026-05-15 同步全部 ADR）|
-| 关联文档 | [PRD.md](PRD.md) · [Architecture.md](Architecture.md) · [KnowledgeGraph_Overview.md](KnowledgeGraph_Overview.md) · [adr/](adr/) |
+| 关联文档 | [PRD.md](PRD.md) · [Architecture.md](Architecture.md) · [Architecture.md](Architecture.md) · [adr/](adr/) |
 | 起始 | M0 = 项目立项后第 1 个月 |
 | 总周期 | 12 个月（M0 → M12） |
 | 最后更新 | 2026-05-15 |

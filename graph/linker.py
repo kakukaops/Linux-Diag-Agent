@@ -280,3 +280,83 @@ def link_nvd_commits(engine: "Engine", *, batch_size: int = 500) -> int:
 
     logger.info("NVD linker inserted %d commit-cve rows", inserted)
     return inserted
+
+
+# ── gitee / atomgit issue linker (ADR-022) ────────────────────────────────────
+
+_GITEE_ISSUE_RE = re.compile(
+    r"gitee\.com/openeuler/kernel/issues/([A-Z0-9]+)", re.IGNORECASE,
+)
+_ATOMGIT_ISSUE_RE = re.compile(
+    r"atomgit\.com/openeuler/kernel/issues/(\d+)", re.IGNORECASE,
+)
+
+
+def link_gitee_atomgit_bugs(engine: "Engine") -> dict[str, int]:
+    """Wire commit↔bug links for gitee + atomgit issue references (ADR-022).
+
+    For each commit citing a gitee/atomgit issue URL in its body, look up the
+    matching bug row by (source, external_id) and INSERT into link_commit_bug.
+
+    Returns counts per source.
+    """
+    inserted = {"gitee": 0, "atomgit": 0}
+    skipped_no_bug = {"gitee": 0, "atomgit": 0}
+
+    # Build (source, external_id) -> bug.id index once. ~4K rows for gitee
+    # after backfill — well within memory.
+    with engine.connect() as conn:
+        bug_idx: dict[tuple[str, str], int] = {
+            (r.source, r.external_id.upper()): r.id
+            for r in conn.execute(
+                text("SELECT id, source, external_id FROM bug "
+                     "WHERE source IN ('gitee','atomgit')")
+            )
+        }
+    logger.info("[linker] gitee/atomgit bug index size: %d", len(bug_idx))
+    if not bug_idx:
+        return inserted
+
+    # Stream all commits that cite either platform.
+    sql = text("""
+        SELECT hash, body FROM kernel_commit
+         WHERE body ILIKE '%gitee.com/openeuler/kernel/issues%'
+            OR body ILIKE '%atomgit.com/openeuler/kernel/issues%'
+    """)
+    pairs: list[tuple[str, str, str, str]] = []  # (commit_hash, source, ext_id, link_type)
+    with engine.connect() as conn:
+        cur = conn.execution_options(stream_results=True).execute(sql)
+        for hsh, body in cur:
+            for m in _GITEE_ISSUE_RE.finditer(body or ""):
+                pairs.append((hsh, "gitee", m.group(1).upper(), "trailer"))
+            for m in _ATOMGIT_ISSUE_RE.finditer(body or ""):
+                pairs.append((hsh, "atomgit", m.group(1), "trailer"))
+    # Dedup
+    pairs = list({p: None for p in pairs}.keys())
+    logger.info("[linker] candidate commit→bug pairs: %d", len(pairs))
+
+    insert_sql = text("""
+        INSERT INTO link_commit_bug (commit_hash, bug_id, link_type, confidence, source)
+        VALUES (:h, :b, :lt, 0.95, :src)
+        ON CONFLICT ON CONSTRAINT uq_lcb DO NOTHING
+    """)
+    CHUNK = 1000
+    with engine.begin() as conn:
+        batch = []
+        for hsh, source, ext_id, lt in pairs:
+            bug_id = bug_idx.get((source, ext_id))
+            if bug_id is None:
+                skipped_no_bug[source] += 1
+                continue
+            batch.append({"h": hsh, "b": bug_id, "lt": lt, "src": source})
+            inserted[source] += 1
+            if len(batch) >= CHUNK:
+                conn.execute(insert_sql, batch)
+                batch.clear()
+        if batch:
+            conn.execute(insert_sql, batch)
+
+    logger.info("[linker] inserted gitee=%d atomgit=%d (skipped no-bug: gitee=%d atomgit=%d)",
+                inserted["gitee"], inserted["atomgit"],
+                skipped_no_bug["gitee"], skipped_no_bug["atomgit"])
+    return inserted

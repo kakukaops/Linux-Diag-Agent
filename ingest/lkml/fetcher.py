@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import gzip
 import logging
-import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +21,13 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 logger = logging.getLogger(__name__)
 
-_REQUEST_DELAY_S = 1.5
+# Shared thread-safe limiter for lore.kernel.org — 40 rpm = 1.5s/req.
+# Necessary because `time.sleep(1.5)` is NOT thread-safe under case-level
+# concurrent eval: multiple threads sleep simultaneously then all hit lore
+# at once. The endpoint limiter serialises across threads in one process.
+def _lore_limiter():
+    from llm.rate_limit.sliding_window import get_endpoint_limiter
+    return get_endpoint_limiter("lore.kernel.org", 40)
 _TIMEOUT_S = 120
 _ATOM_PAGE_SIZE = 200  # lore returns 200 entries per Atom page
 _ATOM_NS = {"a": "http://www.w3.org/2005/Atom"}
@@ -149,7 +154,7 @@ class LoreFetcher:
         reraise=True,
     )
     def _fetch_atom(self, list_name: str, query: str, offset: int) -> bytes:
-        time.sleep(_REQUEST_DELAY_S)
+        _lore_limiter().acquire()
         url = f"{self._base_url}/{list_name}/"
         resp = self._client.get(url, params={"q": query, "x": "A", "o": str(offset)})
         if resp.status_code == 404:
@@ -165,7 +170,7 @@ class LoreFetcher:
         reraise=True,
     )
     def _fetch_raw(self, permalink: str) -> bytes:
-        time.sleep(_REQUEST_DELAY_S)
+        _lore_limiter().acquire()
         resp = self._client.get(f"{permalink}/raw")
         if resp.status_code in (404, 410):
             return b""

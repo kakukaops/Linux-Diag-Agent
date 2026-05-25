@@ -33,12 +33,16 @@ logger = logging.getLogger(__name__)
 @click.option("--limit", default=None, type=int, help="Run only first N cases.")
 @click.option("--no-judge", is_flag=True, help="Skip LLM root-cause judge (faster).")
 @click.option("--category", default=None, help="Run only cases of this category.")
+@click.option("--concurrency", default=1, type=int,
+              help="Run N cases in parallel (default 1; OpenRouter 600 rpm + lore 40 rpm "
+                   "shared limiters handle 3-4 safely).")
 def main(
     dataset: str,
     output: str,
     limit: int | None,
     no_judge: bool,
     category: str | None,
+    concurrency: int,
 ) -> None:
     """Run v2 batch evaluation on cases_v2.json."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -46,19 +50,45 @@ def main(
     out_dir = Path(output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    t0 = time.monotonic()
     results: list[dict[str, Any]] = []
-    for i, case in enumerate(cases, 1):
-        logger.info("Case %d/%d: %s", i, len(cases), case.get("id", "?"))
-        result = _run_case(case, use_judge=not no_judge)
-        results.append(result)
-        (out_dir / f"{case.get('id', i)}.json").write_text(
-            json.dumps(result, indent=2, default=str), encoding="utf-8"
-        )
-        _print_case_result(result)
+    if concurrency <= 1:
+        for i, case in enumerate(cases, 1):
+            logger.info("Case %d/%d: %s", i, len(cases), case.get("id", "?"))
+            result = _run_case(case, use_judge=not no_judge)
+            _save_case(result, case, out_dir)
+            _print_case_result(result)
+            results.append(result)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info("Running %d cases with concurrency=%d", len(cases), concurrency)
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {pool.submit(_run_case, c, use_judge=not no_judge): c for c in cases}
+            done = 0
+            for fut in as_completed(futures):
+                case = futures[fut]
+                done += 1
+                try:
+                    result = fut.result()
+                except Exception as exc:
+                    logger.exception("Case %s crashed: %s", case.get("id"), exc)
+                    result = _make_error_result(case, str(exc))
+                _save_case(result, case, out_dir)
+                logger.info("Case %d/%d done: %s", done, len(cases), case.get("id"))
+                _print_case_result(result)
+                results.append(result)
+    elapsed = time.monotonic() - t0
+    logger.info("Total eval wall time: %.1fs (%.1f min)", elapsed, elapsed / 60)
 
     summary = _compute_summary(results)
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     _print_summary(summary)
+
+
+def _save_case(result: dict, case: dict, out_dir: Path) -> None:
+    (out_dir / f"{case.get('id', 'unknown')}.json").write_text(
+        json.dumps(result, indent=2, default=str), encoding="utf-8"
+    )
 
 
 def _load_cases(
@@ -214,6 +244,16 @@ def _llm_judge(ground_truth: str, agent_answer: str) -> tuple[bool, str]:
     except Exception as exc:
         logger.warning("LLM judge failed: %s", exc)
         return None, f"judge_error: {exc}"
+
+
+def _make_error_result(case: dict, err: str) -> dict:
+    return {
+        "case_id": case.get("id", "unknown"),
+        "category": case.get("category"),
+        "error": err,
+        "elapsed_ms": 0.0,
+        **_zero_metrics(),
+    }
 
 
 def _zero_metrics() -> dict:

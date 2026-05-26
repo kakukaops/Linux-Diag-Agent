@@ -144,9 +144,13 @@ def _link_link_trailer_to_message(conn: Any, batch_size: int, report: LinkReport
 
     for commit_hash, body, subject in rows:
         body = body or ""
-        # 1. Lore URL → message_id from Link: trailers
+        # 1. Lore URL → message_id from Link: trailers (strip trailing
+        # punctuation captured by the regex — see ingest/lkml/backfill._clean_msgid)
+        from ingest.lkml.backfill import _clean_msgid  # noqa: PLC0415
         for m in _LORE_URL_RE.finditer(body):
-            msg_id = m.group(1)
+            msg_id = _clean_msgid(m.group(1))
+            if not msg_id or "@" not in msg_id:
+                continue
             _upsert_commit_message_link(conn, commit_hash, msg_id, "link_trailer", report)
 
         # 2. Subject match fallback — search lkml_message by cleaned subject

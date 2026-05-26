@@ -60,10 +60,24 @@ def extract_referenced_message_ids(engine) -> list[str]:
         rows = conn.execute(sql).fetchall()
     ids = []
     for (mid,) in rows:
-        mid = (mid or "").strip().strip("<>")
+        mid = _clean_msgid(mid or "")
         if _is_valid_message_id(mid):
             ids.append(mid)
     return ids
+
+
+# Trailing punctuation that the URL regex `[^/\s>]+@[^/\s>]+` captures by
+# mistake — these are sentence/bracket/quote endings around lore URLs in
+# commit bodies. Stripping them recovers ~80 of the 237 GAP cases.
+_TRAILING_PUNCT = ".,;:'\")]>}"
+
+
+def _clean_msgid(mid: str) -> str:
+    """Strip whitespace and trailing punctuation from extracted message-id."""
+    mid = mid.strip().strip("<>")
+    while mid and mid[-1] in _TRAILING_PUNCT:
+        mid = mid[:-1]
+    return mid
 
 
 def _is_valid_message_id(mid: str) -> bool:

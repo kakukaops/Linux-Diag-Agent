@@ -2,6 +2,133 @@
 
 ---
 
+## Q14：能不能用 sourcebot-dev/sourcebot 替代 CodeGraph？
+
+**结论：不能。三个关键阻碍。**
+
+### 一、我们 CodeGraph 实际用了什么
+
+从 `retrieval/recall/`、`agent/react/tools/`、`clients/codegraph/client.py` 实测：
+
+| 调用点 | CodeGraph 能力 |
+|---|---|
+| `retrieval/recall/code.py` | `search_code`（BM25 关键词搜源码）|
+| `retrieval/recall/docs.py` | `search_code` 也用于 Sphinx 文档检索 |
+| `retrieval/recall/page_index.py` | `page_index_walk`（符号树遍历）|
+| `agent/react/tools/retrieval_tools._lookup_symbol` | `page_index_walk` 符号定义/引用查询 |
+| `agent/react/tools/code_tools._get_function_source` | `search_code` + 函数体提取 |
+| `agent/react/tools/code_tools._get_call_graph` | `page_index_walk` 跨文件调用链 |
+
+核心两件事：
+1. **BM25 文本搜索**（搜源码 + 搜 Sphinx 文档）
+2. **符号级精确导航**（goto-definition / find-references / 调用链）
+
+### 二、Sourcebot MCP 实测能力
+
+Free 层（**FSL 源码可用许可**，不是 OSS）提供的 MCP tools：
+
+| Tool | 对标我们的 |
+|---|---|
+| `grep`（regex 搜，Zoekt trigram 后端）| 类比 `search_code`，**regex 而非 BM25** |
+| `read_file` | 读源码内容 |
+| `list_tree`、`glob`、`list_repos` | 仓库导航 |
+| `list_commits`、`get_diff` | git 历史 |
+| `ask_codebase`（内置 LLM agent）| 我们不需要 — 我们有自己的 ReAct |
+
+Enterprise 层（**收费**）才解锁：
+
+| Tool | 对标 |
+|---|---|
+| `find_symbol_definitions` | 类比 `lookup_symbol` |
+| `find_symbol_references` | 类比 `get_call_graph` |
+| MCP OAuth、SSO 等 | — |
+
+### 三、三个不可越过的阻碍
+
+#### ❌ 阻碍 1：符号导航是付费功能
+
+Sourcebot 官方文档明确：
+
+> Code navigation explicitly requires Enterprise license
+
+我们 6 个调用点里 **3 个**（`_lookup_symbol`、`_get_call_graph`、`_get_function_source`）必须有符号导航。Free 层用不了。
+
+#### ❌ 阻碍 2：符号检测精度是 ctags 启发式，不是编译器级
+
+```
+Sourcebot 实现:    universal-ctags + 正则启发式 (pattern-based)
+                  ↓
+                  "search heuristics to estimate symbol references"
+
+我们 CodeGraph:    scip-clang (LLVM 编译器级，SCIP 协议)
+                  ↓
+                  真实知道 #ifdef 分支、宏展开、typedef 链、函数指针
+```
+
+对内核这种**重预处理 + 多 arch + 大量宏**的代码：
+- ctags 看不懂 `arch/x86/` vs `arch/arm64/` 的同名函数
+- 看不懂 `#define READ_ONCE(x) ...` 这种宏
+- 看不懂 `struct.member` 字段引用
+- 看不懂函数指针 dispatch
+
+**精度差太多**。诊断里说"call trace 的 `tcp_v4_do_rcv` 在哪定义"，ctags 可能给一堆同名 false positive。
+
+#### ❌ 阻碍 3：没有 Sphinx 文档索引
+
+我们 CodeGraph 索引 OLK kernel 的 Sphinx kernel-doc（`Documentation/` 目录），`retrieval/recall/docs.py` 路依赖。Sourcebot 文档**不提**任何 Markdown / Sphinx / RST 索引支持，**只索引代码**。
+
+我们 7 路检索的 `docs` 路会失能。
+
+### 四、整体对比
+
+| 维度 | CodeGraph | Sourcebot Free | Sourcebot Enterprise |
+|---|---|---|---|
+| 文本检索算法 | Zoekt BM25 | Zoekt 正则 | 同 |
+| 符号导航 | scip-clang (precise) | ❌ | ctags (heuristic) |
+| Sphinx 文档 | ✅ kernel-doc 索引 | ❌ | ❌ |
+| MCP HTTP | ✅ | ✅ Streamable HTTP | 同 + OAuth |
+| Web UI | 弱 | ✅ Next.js UI | 同 |
+| 内置 LLM agent | ❌ | ✅ ask_codebase | 同 |
+| 许可 | 看 CodeGraph 自身 | FSL（源码可读，非 OSS）| 商业收费 |
+| 内核大代码库适配 | ADR-018 验证过 | 未验证 | 未验证 |
+
+### 五、什么场景下 sourcebot 反而合适？
+
+> 不是用来替代 CodeGraph，是它的另一个产品定位。
+
+- **小到中型企业代码库**（几十万行 Java / Go / Python / TS）—— ctags 启发式够用
+- **需要好看 Web UI 让人在浏览器里搜代码** —— 它有不错的 Next.js UI
+- **想要"内置 ask_codebase"** —— LLM + 代码搜索一站式
+- **多代码源聚合**（GitHub + GitLab + Gitea + Bitbucket）—— 它支持得好
+
+跟我们场景**正交**。我们要的是：内核（30M LoC、重宏、跨 arch）的精确符号导航 + Sphinx 文档检索 + MCP 给 ReAct agent 调。
+
+### 六、真正的 CodeGraph 替代候选
+
+如果将来真要替代 CodeGraph，更靠谱的方向：
+
+| 候选 | 评价 |
+|---|---|
+| **Zoekt 直连 + scip-clang 直连** | 两个 OSS 组件，自己拼一层 MCP。能复刻 CodeGraph 核心；工作量 = 1-2 周 |
+| **Sourcegraph OSS / OpenSrc** | 老版本是 Apache 2，BM25 + SCIP 都支持；但巨大、运维重 |
+| **OpenGrok** | 老牌 Java 代码搜索，索引慢，无符号导航 |
+| **Glean (Meta 开源)** | 编译器级索引，但 build 流程极重 |
+| **stay with CodeGraph** | 它本来就是为这个产品调过的 |
+
+### 七、诚实结论
+
+**短期**：留 CodeGraph，**不替换**。
+
+**长期**（如果 CodeGraph 维护成本变高）：
+- 自己搭 Zoekt + scip-clang + Sphinx 的 MCP wrapper（1-2 周工作量，比 Sourcebot Enterprise 便宜很多）
+- **不要选 Sourcebot** —— 定位不一样、关键功能要钱、内核场景没验证
+
+---
+
+*相关问题：Q13（业界类似项目）· Q12（设计思路）· 参考：[ADR-018](v1/adr/ADR-018-commit-source-olk-kernel.md)*
+
+---
+
 ## Q13：业界有没有类似的做法或开源项目？
 
 按"相似维度"分四类，每类列最接近的项目 + 跟我们的差异。

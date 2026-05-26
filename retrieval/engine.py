@@ -126,7 +126,9 @@ def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
     message_ids = _top_by_score(items, RouteTag.lkml, "message_id", _INJECT_TOP_K_PER_SRC)
     cve_ids = _top_by_score(items, RouteTag.cve, "cve_id", _INJECT_TOP_K_PER_SRC)
     bug_ids = _top_by_score(items, RouteTag.bug, "bug_id", _INJECT_TOP_K_PER_SRC)
-    if not message_ids and not cve_ids and not bug_ids:
+    # patch-lineage: commits surfaced by BM25 can pull in their Fixes/Revert chain
+    commit_hashes = _top_by_score(items, RouteTag.commit, "commit_hash", _INJECT_TOP_K_PER_SRC)
+    if not message_ids and not cve_ids and not bug_ids and not commit_hashes:
         return []
 
     existing_hashes = {e.commit_hash for e in items
@@ -193,6 +195,59 @@ def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
                         route=RouteTag.commit, score=bug_ids[r.bug_id] * 0.9,
                         title=r.subject or "", body="", commit_hash=r.commit_hash,
                         metadata={"linked_from": "bug", "via_bug_id": r.bug_id},
+                    ))
+
+            # Patch-lineage paths (v2.1 P0a/P0b): commits found by BM25 pull
+            # in their Fixes-chain (this commit fixes that one) and Revert-chain.
+            if commit_hashes:
+                # Fixes-chain: kc is the FIXER, target is the FIXED. Surface
+                # both directions so agent can walk patch lineage either way.
+                rows = conn.execute(text("""
+                    SELECT lcf.fixer_hash AS via, lcf.fixed_hash AS target,
+                           kc.subject, 'fixes_target' AS direction
+                      FROM link_commit_fixes lcf
+                      JOIN kernel_commit kc ON kc.hash = lcf.fixed_hash
+                     WHERE lcf.fixer_hash = ANY(:hashes)
+                    UNION ALL
+                    SELECT lcf.fixed_hash AS via, lcf.fixer_hash AS target,
+                           kc.subject, 'fixed_by' AS direction
+                      FROM link_commit_fixes lcf
+                      JOIN kernel_commit kc ON kc.hash = lcf.fixer_hash
+                     WHERE lcf.fixed_hash = ANY(:hashes)
+                    LIMIT 50
+                """), {"hashes": list(commit_hashes.keys())}).fetchall()
+                for r in rows:
+                    if r.target in existing_hashes:
+                        continue
+                    existing_hashes.add(r.target)
+                    out.append(Evidence(
+                        route=RouteTag.commit, score=commit_hashes[r.via] * 0.85,
+                        title=r.subject or "", body="", commit_hash=r.target,
+                        metadata={"linked_from": f"commit_{r.direction}", "via_commit": r.via},
+                    ))
+                # Revert-chain
+                rows = conn.execute(text("""
+                    SELECT lcr.reverter_hash AS via, lcr.reverted_hash AS target,
+                           kc.subject, 'reverts_target' AS direction
+                      FROM link_commit_revert lcr
+                      JOIN kernel_commit kc ON kc.hash = lcr.reverted_hash
+                     WHERE lcr.reverter_hash = ANY(:hashes)
+                    UNION ALL
+                    SELECT lcr.reverted_hash AS via, lcr.reverter_hash AS target,
+                           kc.subject, 'reverted_by' AS direction
+                      FROM link_commit_revert lcr
+                      JOIN kernel_commit kc ON kc.hash = lcr.reverter_hash
+                     WHERE lcr.reverted_hash = ANY(:hashes)
+                    LIMIT 20
+                """), {"hashes": list(commit_hashes.keys())}).fetchall()
+                for r in rows:
+                    if r.target in existing_hashes:
+                        continue
+                    existing_hashes.add(r.target)
+                    out.append(Evidence(
+                        route=RouteTag.commit, score=commit_hashes[r.via] * 0.85,
+                        title=r.subject or "", body="", commit_hash=r.target,
+                        metadata={"linked_from": f"commit_{r.direction}", "via_commit": r.via},
                     ))
     except Exception as exc:
         logger.warning("Cross-graph commit injection failed: %s", exc)

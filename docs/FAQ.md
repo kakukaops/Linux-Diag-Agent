@@ -2,6 +2,181 @@
 
 ---
 
+## Q11：commit 图谱构建的原理是什么？
+
+### 核心一句话
+
+**Linux 内核 commit 是一种"自带元数据的可执行文档"**。我们不做语义推断，**只把已经存在于 commit body 的纯文本引用，物化成可 JOIN 的关系表**。
+
+### 原理四步走
+
+#### 第 1 步：每个 commit 自我描述
+
+Linus 在 2005 年定下规矩，至今每条 mainline commit 都按这个结构：
+
+```
+mm: memcontrol: don't throttle dying tasks on memory.high     ← subject
+
+The OOM killer can deadlock when a memcg under memory.high pressure ...
+[多段解释]                                                      ← body
+
+Fixes: abc1234567 ("memcg: introduce memory.high")            ← 修了哪个 commit
+Link: https://lore.kernel.org/r/20240115.abc@xyz/             ← 哪里讨论的
+Reported-by: Foo Bar <foo@bar.com>                            ← 谁报的
+Reviewed-by: Baz Qux <baz@qux.com>
+Cc: stable@vger.kernel.org # v6.6+                            ← 标记 backport
+CVE: CVE-2024-50022                                           ← 对应漏洞
+Signed-off-by: Author <a@a.com>
+```
+
+**每行 trailer 都是一条**有向边的文本表达**。** 这是数据原生事实，不是我们设计的。
+
+#### 第 2 步：Ingester 解析 trailer，存进结构化字段
+
+`ingest/kernel_commit/ingester.py` 抓到一条 commit，正则提取：
+
+| 文本 trailer | 存到哪个字段 |
+|---|---|
+| `Fixes: abc1234` | `kernel_commit.fixes_refs[]` TEXT[] |
+| `CVE: CVE-2024-XXXX` | `kernel_commit.body` 里保留 + 后续 linker 用 |
+| `bugzilla: gitee.com/.../issues/I3JK` | `kernel_commit.body`（不预解析，linker 用）|
+| `Link: lore.kernel.org/.../<msg-id>` | `kernel_commit.body`（不预解析）|
+| OLK `[ Upstream commit abc123 ]` 头 | `kernel_commit.upstream_commit` |
+
+**此时仅 commit 表自描述**，没有跨表关系。
+
+#### 第 3 步：等其他源也入库
+
+- **lkml_message**：lore.kernel.org 抓 → 被引用的邮件入库
+- **bug**：gitee + atomgit + bugzilla.kernel.org → issue 入库
+- **cve**：NVD JSON feed → CVE 入库
+- **kernel_commit (mainline)**：linux-stable.git 抓 → 上游 commit
+
+每个源都是**独立摄入**，互不知道。
+
+#### 第 4 步：Linker 跑 SQL，把引用「兑现」成边
+
+`graph/linker.py` 的核心逻辑就是：
+
+```sql
+-- 对每条 commit body 里出现过 "Link: lore.kernel.org/.../<msg-id>" 的
+-- AND msg-id 在 lkml_message 表也存在
+-- → 物化成 link_commit_message 的一行
+INSERT INTO link_commit_message (commit_hash, message_id, ...)
+SELECT kc.hash, lm.message_id
+  FROM kernel_commit kc, regexp_matches(kc.body, 'lore\.kernel\.org/[^\s]+/([^/\s>]+@[^/\s>]+)', 'g') AS ref
+  JOIN lkml_message lm ON lm.message_id = ref[1]
+```
+
+**两端都必须存在 → 才写一行边**。
+
+每张 link 表对应一种 trailer 模式：
+
+| Link 表 | 来源 trailer | 当前行数 |
+|---|---|---|
+| `link_commit_message` | `Link: lore.kernel.org/.../<msg-id>` | 33,099 |
+| `link_commit_cve` | NVD `references` 字段含 commit URL（反向）| 401 |
+| `link_commit_bug` | `bugzilla: gitee.com/.../issues/X` (OLK) + `Closes: bugzilla.kernel.org/...` | 58,388 |
+| `link_commit_fixes` | `Fixes: <sha>` trailer | 88,068 |
+| `link_commit_revert` | body `This reverts commit <sha>` | 4,511 |
+
+### 查询时变成纯 JOIN
+
+Agent 拿到一个 commit hash，想"按图索骥"找关联，每跳都是 **O(log N) 索引 JOIN**：
+
+```sql
+-- 这个 commit 修了哪个 commit？
+SELECT fixed_hash FROM link_commit_fixes WHERE fixer_hash = 'abc123';
+
+-- 反向：哪些 commit 修了我？
+SELECT fixer_hash FROM link_commit_fixes WHERE fixed_hash = 'abc123';
+
+-- 这个 commit 对应的 patch 讨论邮件？
+SELECT lm.subject, lm.body FROM link_commit_message lcm
+  JOIN lkml_message lm ON lm.message_id = lcm.message_id
+ WHERE lcm.commit_hash = 'abc123';
+
+-- 三跳：这个 CVE 的修复 commit 又修了哪个老 commit？
+SELECT lcf.fixed_hash
+  FROM link_commit_cve lcc
+  JOIN link_commit_fixes lcf ON lcf.fixer_hash = lcc.commit_hash
+ WHERE lcc.cve_id = 'CVE-2024-50022';
+```
+
+**纯结构化查询，不需 LLM、不需 embedding、不需相似度**。
+
+### 为什么这条路能走通？
+
+| 前提 | 内核生态满足吗？ |
+|---|---|
+| 引用必须是**显式的**（不靠"猜"）| ✅ 20+ 年 trailer 强制文化 |
+| 引用必须**指向稳定标识符** | ✅ commit SHA / msg-id / CVE-ID 都是全局唯一不变 |
+| 引用必须**可机器解析** | ✅ 标准格式（"Fixes: <sha>", "Link: <url>"）|
+| 数据规模**有边界** | ✅ 内核 1.3-3M commit、几万邮件、几万 issue —— 可全量入库 |
+
+换在很多其他生态行不通：
+- **OSS 应用代码** 通常没有 Linus 式的 trailer 文化
+- **企业内部代码** commit message 经常空荡荡
+- **Web 服务的 PR 模型** 走 GitHub UI，关系散在 PR 评论里，不在 commit body
+
+**内核是恰好满足"图结构隐藏在文本里"的少数项目**。
+
+### 对照传统知识图谱构建
+
+| 传统 KG 构建 | 我们 |
+|---|---|
+| NER 命名实体识别 | ❌ 不需要 — 实体就是 commit hash / msg-id 这种字面 ID |
+| 关系抽取 ML 模型 | ❌ 不需要 — 关系就是 `Fixes:` / `Link:` 这种字面 trailer |
+| 实体对齐 / 消歧 | ❌ 不需要 — ID 全局唯一不变 |
+| 知识融合 / 冲突解决 | ❌ 不需要 — 每条边都有 100% 文本证据 |
+| Embedding + 相似度 | ❌ 不要 — ADR-001 明确拒绝 |
+| 统计性置信度 | 简化版本：`confidence=0.95`（有 trailer）vs 0.7（subject 模糊匹配回退）|
+
+**所以严格说我们做的不是"知识图谱"，是"内核 trailer 结构化关系数据库"**。区别在哪：
+- KG 强调"从非结构化文本提取关系" —— 我们叫"语义抽取"
+- 我们做的是"从已经半结构化的 trailer 物化关系" —— 叫"trailer 抽取"
+- 后者**远比 KG 可靠**，因为引用是社区强制的而不是 ML 猜的
+
+### 一个具体例子：oom-001 多跳
+
+用户报 "OOM kill in cgroup"，agent BM25 命中 LKML 邮件，然后顺图谱走：
+
+```
+Step 1: LKML BM25
+  message_id = "20210913230759.2313-1-daniel@iogearbox.net"
+  subject: "[PATCH] bpf, cgroups: Fix cgroup v2 fallback..."
+
+Step 2: link_commit_message JOIN
+  → 找到对应 commit: 8520e224f547
+
+Step 3: link_commit_fixes JOIN (查它修了哪个)
+  → 老 commit: bd1060a1d671 "cgroup, bpf: support per-cgroup ..."
+
+Step 4: kernel_commit.upstream_commit JOIN (反查 OLK 是否 backport)
+  → OLK-6.6 hash: 8520e224 (此 commit 已进 OLK)
+  → 但 OLK-5.10 没找到 → 提示用户该 backport 没进 5.10
+
+Step 5: link_commit_cve JOIN (反查有无安全公告)
+  → 这个 commit 对应 CVE-2021-XXXX
+```
+
+**5 跳走完，全是纯 ID JOIN，毫秒级**。换 embedding 路径，每跳都要算相似度 + 排序 + LLM 选择，5 跳累积几十秒，还可能 hallucinate。
+
+### 一句话总结
+
+**Commit 图谱构建 = 信任 + 解析 + JOIN**：
+- **信任**内核社区 20 年 trailer 文化
+- **解析**正则把 trailer 抽出来
+- **JOIN** 把两端都存在的引用物化成 link 表
+
+技术上简单但工程上稳。这是 ADR-001（无 embedding）的根本依据。
+
+---
+
+*相关问题：Q10（专家 review）· Q6（为什么 commit 是 hub）· Q5（图谱结构）*
+
+---
+
 ## Q10：外部专家说要建"commit lineage 图"采多个 distro 仓 + 加 embedding，我们对照下当前差距？
 
 review 一位 Linux 内核专家的建议（2026-05-26）。专家提了 5 个核心点，我们用 DB 数据逐条对照：

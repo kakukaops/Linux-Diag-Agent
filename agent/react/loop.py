@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 
 MAX_ITER = 15           # ADR-019 D3 hard ceiling
 REPEAT_LIMIT = 3        # ADR-019 D4: same (tool, args) repeated/failed N times → exit
-TOKEN_BUDGET = 150_000  # ADR-019 D3 per-investigation token cap (raised from 50K: input_tokens accumulate across steps)
+TOKEN_BUDGET = 200_000  # ADR-019 D3 per-investigation cap. 50K v1 → 150K v2 (LKML
+                        # backfill expanded context) → 200K post-ADR-022 (gitee/atomgit
+                        # bug bodies 3-11KB each push tokens past 150K on 4/15 cases).
 
 
 @dataclass

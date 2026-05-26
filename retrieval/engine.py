@@ -91,20 +91,42 @@ def _run_route(route: RouteTag, query: RetrievalQuery) -> list[Evidence]:
     return mod.recall(query)
 
 
+_INJECT_TOP_K_PER_SRC = 10        # only top-K hits per route inject linked commits
+_INJECT_MAX_LINKS_PER_HIT = 5     # cap linked commits per source hit (bugs can
+                                  # have ~100 linked commits across OLK versions
+                                  # — they'd flood the reranker)
+
+
+def _top_by_score(items: list[Evidence], route: RouteTag, attr: str, k: int) -> dict:
+    """Return {id_value: score} for the top-K route hits ranked by score desc."""
+    hits = [(getattr(e, attr), e.score)
+            for e in items if e.route == route and getattr(e, attr)]
+    hits.sort(key=lambda x: x[1], reverse=True)
+    return {idv: sc for idv, sc in hits[:k]}
+
+
 def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
-    """Surface commits that the cross-graph links to LKML / CVE hits.
+    """Surface commits that the cross-graph links to LKML / CVE / bug hits.
 
     Score = source evidence score × 0.9 so the injected commit ranks just below
     its source. Skips commit hashes already present.
+
+    Capped: only top-K=10 hits per route inject; each contributes at most
+    5 linked commits — prevents flooding (a single bug can link to ~100
+    commits across OLK backport variants).
+
+    Bug→commit path activated post-ADR-022: bug table now has 58K rows with
+    link_commit_bug populated; OLK-specific issues (gitee / atomgit) commonly
+    cite their fix commits, so a BM25 bug hit can surface relevant commits
+    the BM25 commit route wouldn't rank in top-K.
     """
     from sqlalchemy import text
     from storage.pg.engine import get_engine
 
-    message_ids = {e.message_id: e.score for e in items
-                   if e.route == RouteTag.lkml and e.message_id}
-    cve_ids = {e.cve_id: e.score for e in items
-               if e.route == RouteTag.cve and e.cve_id}
-    if not message_ids and not cve_ids:
+    message_ids = _top_by_score(items, RouteTag.lkml, "message_id", _INJECT_TOP_K_PER_SRC)
+    cve_ids = _top_by_score(items, RouteTag.cve, "cve_id", _INJECT_TOP_K_PER_SRC)
+    bug_ids = _top_by_score(items, RouteTag.bug, "bug_id", _INJECT_TOP_K_PER_SRC)
+    if not message_ids and not cve_ids and not bug_ids:
         return []
 
     existing_hashes = {e.commit_hash for e in items
@@ -143,6 +165,34 @@ def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
                         route=RouteTag.commit, score=cve_ids[r.cve_id] * 0.9,
                         title=r.subject or "", body="", commit_hash=r.commit_hash,
                         metadata={"linked_from": "cve", "via_cve_id": r.cve_id},
+                    ))
+            if bug_ids:
+                # Per-bug LIMIT (window function): one OLK bug can link to
+                # ~100 commits (same patch backported to OLK-5.10 / 6.6 / SP*).
+                # Without partition cap, 10 bugs × 100 = 1000 injections flood
+                # the reranker. Cap at 5 most-recent-by-commit-date per bug.
+                rows = conn.execute(text("""
+                    WITH ranked AS (
+                        SELECT lcb.commit_hash, lcb.bug_id, kc.subject,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY lcb.bug_id
+                                   ORDER BY kc.commit_date DESC NULLS LAST
+                               ) AS rn
+                          FROM link_commit_bug lcb
+                          JOIN kernel_commit kc ON kc.hash = lcb.commit_hash
+                         WHERE lcb.bug_id = ANY(:bids)
+                    )
+                    SELECT commit_hash, bug_id, subject FROM ranked WHERE rn <= :n
+                """), {"bids": list(bug_ids.keys()),
+                       "n": _INJECT_MAX_LINKS_PER_HIT}).fetchall()
+                for r in rows:
+                    if r.commit_hash in existing_hashes:
+                        continue
+                    existing_hashes.add(r.commit_hash)
+                    out.append(Evidence(
+                        route=RouteTag.commit, score=bug_ids[r.bug_id] * 0.9,
+                        title=r.subject or "", body="", commit_hash=r.commit_hash,
+                        metadata={"linked_from": "bug", "via_bug_id": r.bug_id},
                     ))
     except Exception as exc:
         logger.warning("Cross-graph commit injection failed: %s", exc)

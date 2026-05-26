@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 @click.option("--limit", default=None, type=int, help="Run only first N cases.")
 @click.option("--no-judge", is_flag=True, help="Skip LLM root-cause judge (faster).")
 @click.option("--category", default=None, help="Run only cases of this category.")
+@click.option("--case-ids", default=None,
+              help="Comma-separated list of case ids to run (overrides --limit/--category).")
+@click.option("--merge-summary", is_flag=True,
+              help="After running, merge with existing per-case JSONs in output dir to "
+                   "recompute summary.json. Useful for partial reruns.")
 @click.option("--concurrency", default=1, type=int,
               help="Run N cases in parallel (default 1; OpenRouter 600 rpm + lore 40 rpm "
                    "shared limiters handle 3-4 safely).")
@@ -42,11 +47,13 @@ def main(
     limit: int | None,
     no_judge: bool,
     category: str | None,
+    case_ids: str | None,
+    merge_summary: bool,
     concurrency: int,
 ) -> None:
     """Run v2 batch evaluation on cases_v2.json."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cases = _load_cases(dataset, limit, category)
+    cases = _load_cases(dataset, limit, category, case_ids)
     out_dir = Path(output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -80,7 +87,20 @@ def main(
     elapsed = time.monotonic() - t0
     logger.info("Total eval wall time: %.1fs (%.1f min)", elapsed, elapsed / 60)
 
-    summary = _compute_summary(results)
+    if merge_summary:
+        # Recompute summary over ALL per-case JSONs in out_dir, not just this run
+        all_results: list[dict[str, Any]] = []
+        for f in sorted(out_dir.glob("*.json")):
+            if f.name == "summary.json":
+                continue
+            try:
+                all_results.append(json.loads(f.read_text(encoding="utf-8")))
+            except Exception as exc:
+                logger.warning("skip %s: %s", f, exc)
+        logger.info("merge_summary: combined %d existing case JSONs", len(all_results))
+        summary = _compute_summary(all_results)
+    else:
+        summary = _compute_summary(results)
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     _print_summary(summary)
 
@@ -92,10 +112,14 @@ def _save_case(result: dict, case: dict, out_dir: Path) -> None:
 
 
 def _load_cases(
-    path: str, limit: int | None, category: str | None
+    path: str, limit: int | None, category: str | None, case_ids: str | None = None,
 ) -> list[dict[str, Any]]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     cases = data if isinstance(data, list) else data.get("cases", [])
+    if case_ids:
+        wanted = {s.strip() for s in case_ids.split(",") if s.strip()}
+        cases = [c for c in cases if c.get("id") in wanted]
+        return cases
     if category:
         cases = [c for c in cases if c.get("category") == category]
     return cases[:limit] if limit else cases

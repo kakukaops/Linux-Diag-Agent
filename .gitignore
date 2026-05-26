@@ -66,6 +66,8 @@ data/zenodo/
 data/lkml/
 data/quarantine/
 data/lkml_backfill_checkpoint.json
+data/gitee_backfill_checkpoint.json
+data/atomgit_backfill_checkpoint.json
 data/metrics/sync_audit.json
 # Keep structure markers
 !data/metrics/.gitkeep

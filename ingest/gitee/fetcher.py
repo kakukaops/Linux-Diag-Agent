@@ -40,7 +40,11 @@ class GiteeFetcher:
         headers = {"User-Agent": "linux-diag-agent/0.1"}
         if token:
             headers["Authorization"] = f"token {token}"
-        self._client = httpx.Client(base_url=_BASE, headers=headers, timeout=timeout)
+        # trust_env=False: bypass HTTP(S)_PROXY / ALL_PROXY env vars. User
+        # requirement: gitee must be accessed direct, never via host proxy.
+        self._client = httpx.Client(
+            base_url=_BASE, headers=headers, timeout=timeout, trust_env=False,
+        )
 
     def __enter__(self) -> "GiteeFetcher":
         return self

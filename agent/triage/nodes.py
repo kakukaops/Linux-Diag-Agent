@@ -131,11 +131,39 @@ def detect_taint_and_hw_signals(state: dict) -> dict:
     if "M" in taint:  # M = machine check exception
         signals.append("taint_machine_check")
 
+    # I/O hang signals — surface storage / SAN / fabric trouble distinct from
+    # taint or MCE. These DO NOT force the hardware route (P1a v2.1: storage
+    # bugs often appear as hung_task / softlockup with kernel-route case
+    # framing). Instead they're attached to state so kernel.md prompt can
+    # surface "non-kernel root cause" hypotheses (see FAQ Q4 model B fix).
+    io_signals: list[str] = []
+    if re.search(r"nvme\d+:.*(?:I/O \d+ )?(?:timeout|completion polled|"
+                 r"resetting controller|abort|admin command timeout)",
+                 text, re.IGNORECASE):
+        io_signals.append("nvme_timeout")
+    if re.search(r"(?:^|\n)\s*sd \w+:.*(?:timing out|aborting cmd|"
+                 r"device offlined)", text, re.IGNORECASE):
+        io_signals.append("scsi_timeout")
+    if re.search(r"Buffer I/O error on dev", text, re.IGNORECASE):
+        io_signals.append("buffer_io_error")
+    if re.search(r"blk_update_request: (?:I/O error|critical target|"
+                 r"critical medium)", text, re.IGNORECASE):
+        io_signals.append("blk_io_error")
+    if re.search(r"(?:scsi target|qla\d+|lpfc|bnx2fc).*(?:link offline|"
+                 r"link down|Fabric)", text, re.IGNORECASE):
+        io_signals.append("san_fabric_event")
+    if re.search(r"pcieport.*AER|PCIe Bus Error|"
+                 r"Link.*(?:retrain|recovery|degraded)",
+                 text, re.IGNORECASE):
+        io_signals.append("pcie_link_event")
+
     return {
         **state,
         "taint_flags": taint,
         "hardware_signals": signals,
         "has_hardware_signal": bool(signals),
+        "io_hang_signals": io_signals,
+        "has_io_hang_signal": bool(io_signals),
     }
 
 

@@ -136,6 +136,32 @@ def _get_call_graph(*, func_name: str,
         return f"CodeGraph unavailable: {exc}"
 
 
+def _get_device_major_mapping(*, major: int | str, kind: str = "block",
+                              **_: object) -> str:
+    """Look up which Linux driver/subsystem owns a device major number.
+
+    Static LANANA table; covers static majors precisely and notes typical
+    dynamic-range assignments. (P1c v2.1 fix for FAQ Q4 model C: agent
+    confused major 254 with virtio_blk in panic-001; actually = dm-*.)
+    """
+    from mcp_servers.shared.device_majors import lookup_major
+    try:
+        m = int(major)
+    except (TypeError, ValueError):
+        return f"error: 'major' must be an integer (got {major!r})"
+    if kind not in ("block", "char"):
+        return f"error: 'kind' must be 'block' or 'char' (got {kind!r})"
+    r = lookup_major(m, kind)
+    out = [f"major={r['major']}  kind={r['kind']}",
+           f"driver: {r['driver']}"]
+    if r["notes"]:
+        out.append(f"notes:  {r['notes']}")
+    if r["dynamic"]:
+        out.append("⚠ Dynamic allocation — value depends on module load order; "
+                   "check /proc/devices on the affected host for definitive answer.")
+    return "\n".join(out)
+
+
 # ── Tool objects ──────────────────────────────────────────────────────────────
 
 GET_COMMIT_DETAIL = Tool(
@@ -269,7 +295,38 @@ GET_CALL_GRAPH = Tool(
     routes=_K,
 )
 
+GET_DEVICE_MAJOR_MAPPING = Tool(
+    name="get_device_major_mapping",
+    description=(
+        "Look up which Linux driver/subsystem owns a device major number "
+        "(e.g. 254 → device-mapper / dm-*; 8 → sd; 259 → nvme). Uses the "
+        "static LANANA table plus typical dynamic-range assignments. "
+        "Use when dmesg shows references like 'major:minor 254:0' and you "
+        "need to know what device that is — agents often misidentify "
+        "dynamic majors (240-254) without this lookup."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "major": {
+                "type": "integer",
+                "description": "The major device number (0-511)",
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["block", "char"],
+                "default": "block",
+                "description": "Device kind (default: block)",
+            },
+        },
+        "required": ["major"],
+    },
+    routes=frozenset({"kernel", "kernel+vmcore", "hardware", "change", "unknown"}),
+    fn=_get_device_major_mapping,
+)
+
 ALL_CODE_TOOLS = [
     GET_COMMIT_DETAIL, GET_COMMIT_DIFF, CHECK_BACKPORT_STATUS,
     GET_REGRESSION_FIXES, GET_FUNCTION_SOURCE, GET_CALL_GRAPH,
+    GET_DEVICE_MAJOR_MAPPING,
 ]

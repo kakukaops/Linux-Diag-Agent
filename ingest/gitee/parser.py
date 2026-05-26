@@ -32,6 +32,13 @@ _SUBSYSTEM_LABEL_RE = re.compile(r"^sig/(\S+)$", re.IGNORECASE)
 _PRIORITY_TO_SEVERITY = {0: "low", 1: "medium", 2: "high", 3: "critical"}
 
 
+def _ts(v: Any) -> Any:
+    """Empty-string → None for timestamp columns (PG rejects '')."""
+    if isinstance(v, str) and not v.strip():
+        return None
+    return v
+
+
 def parse_issue(raw: dict[str, Any]) -> dict[str, Any]:
     """Convert gitee issue JSON to bug-table row dict."""
     labels = raw.get("labels") or []
@@ -62,9 +69,9 @@ def parse_issue(raw: dict[str, Any]) -> dict[str, Any]:
         "severity": severity,
         "reporter": (raw.get("user") or {}).get("login"),
         "assignee": (raw.get("assignee") or {}).get("login"),
-        "created_at": raw.get("created_at"),
-        "updated_at": raw.get("updated_at"),
-        "closed_at": raw.get("finished_at"),
+        "created_at": _ts(raw.get("created_at")),
+        "updated_at": _ts(raw.get("updated_at")),
+        "closed_at": _ts(raw.get("finished_at")),
         "kernel_versions": kernel_versions,
         "description": body,
     }

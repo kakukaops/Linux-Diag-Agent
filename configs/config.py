@@ -116,11 +116,33 @@ class LkmlIngestionConfig(BaseModel):
     batch_size: int = 200
 
 
+class GiteeIngestionConfig(BaseModel):
+    """Gitee issue ingester config (ADR-022).
+
+    `token` raises the rate limit from anonymous 60 rpm to PAT 5000/h.
+    Generate at https://gitee.com/profile/personal_access_tokens (scopes:
+    user_info + projects). Put it in configs/local.yaml (gitignored).
+    """
+    token: str | None = None
+
+
+class AtomgitIngestionConfig(BaseModel):
+    """Atomgit issue ingester config (ADR-022).
+
+    Atomgit shares the gitee/gitcode v5 API shape; anonymous access works
+    but token raises quota and avoids transient WAF interventions. Generate
+    at https://atomgit.com/setting/token-classic (classic personal token).
+    """
+    token: str | None = None
+
+
 class IngestionConfig(BaseModel):
     kernel_commit: KernelCommitIngestionConfig = Field(
         default_factory=KernelCommitIngestionConfig
     )
     lkml: LkmlIngestionConfig = Field(default_factory=LkmlIngestionConfig)
+    gitee: GiteeIngestionConfig = Field(default_factory=GiteeIngestionConfig)
+    atomgit: AtomgitIngestionConfig = Field(default_factory=AtomgitIngestionConfig)
 
 
 class RetrievalConfig(BaseModel):

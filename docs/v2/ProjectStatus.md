@@ -147,7 +147,9 @@ v2 全部 6 个新模块的详设文档已起草完毕（M9-M12 + M22 + M23，�
 | Cross-graph `link_commit_bug` | ≥ 10K | 58,388 | ✓ |
 | Wall time 全量 eval | ≤ 60 min | 47.1 min | ✓ |
 
-## 8. v2.0 → v2.1 backlog（基于 P1b judge reasoning 分析）
+## 8. v2.0 → v2.1 backlog
+
+### 8.1 来自 P1b judge reasoning 分析
 
 LLM judge 否定的 7 例失败模式归为 3 类：
 
@@ -156,6 +158,35 @@ LLM judge 否定的 7 例失败模式归为 3 类：
 | **A. 硬件归因缺失** | io-hang-001、softlockup-002 | kernel route prompt 没要求考虑硬件/存储备选；agent 把 nvme/scsi/SAN 超时诊断成内核 deadlock | **已补 kernel.md "Non-kernel Root Causes" 段**；后续可加 `nvme_timeout`/`scsi_abort` 模式触发 hardware route |
 | **B. 过度具体化** | kasan-001、softlockup-001、rcu-001 | agent 锁定一个具体 commit/fix 当根因，但 GT 描述更宽的可能集；v1 的 generate_hypotheses + self_consistency 在 v2 ReAct 里没了 | 改 ReAct prompt 要求"列举 N 假设带置信度后再选"；或重启 self_consistency K=3 在 budget 允许时 |
 | **C. 事实性错误** | panic-001 (major 254 = dm vs virtio_blk) | agent 不知道 `/proc/devices` 的 major 号映射 | 新增 `get_device_major_mapping` 工具（解析 `/proc/devices`） |
+
+### 8.2 来自外部专家 review（2026-05-26）+ DB 数据审计
+
+专家强调 commit graph 的 **patch lineage / Fixes-chain / Revert-chain** 是诊断价值的核心，跨 distro 采集对通用 Linux 诊断重要。结合我们 OLK 单 distro 定位 + 实测 DB，重新排序：
+
+| 优先级 | 工作 | 数据规模 | 工作量 | 收益 |
+|---|---|---|---|---|
+| **P0a (NEW!)** | **物化 Fixes-chain → `link_commit_fixes` 表**。`kernel_commit.fixes_refs` 数组字段已存 87,750 行 trailer，只差建表 + JOIN 写入 | 87K 个 commit↔commit 边 | **30 min** SQL，**零抓取成本** | patch lineage 直接 O(1) JOIN，专家强调的核心能力上线 |
+| **P0b (NEW!)** | **物化 Revert-chain → `link_commit_revert`**。解析 "Revert ..." subject + body 里的 "This reverts commit ..." trailer | ~6K 个 revert 关系 | 1h | 专家强调的"被 revert 又 redesign"链可走 |
+| **P0c** | **mainline + stable git 入库**（ADR-018 Phase B，长期搁置）| +500K 节点 | 1-2 天 | 60K 悬空 upstream_commit SHA 升真实 commit；图谱 1.3M → 3M 节点 |
+| P1 | **subsystem 自动分类**（从 commit changed files 路径推断 mm/net/fs/...） | 99% → 80%+ 字段填充 | 半天 | 按子系统过滤检索 |
+| P1 | 硬件归因扩展：nvme/scsi/SAN timeout 触发 hardware route | — | 1 PD | 修 §8.1 模式 A 余下部分 |
+| P1 | 假设枚举模式：ReAct prompt 强制 N 假设带置信度 | — | 1 PD | 修 §8.1 模式 B |
+| P2 | `get_device_major_mapping` 工具 | — | 0.5 PD | 修 §8.1 模式 C |
+| P2 | BM25 ts_rank_cd 替换（Tantivy BM25Okapi）| 数据迁移 | 1 周 | 当前 BM25 排名差导致 OOM recall 长期 0%，根治需要换引擎 |
+| **不做** | Ubuntu / RHEL / Android / Debian 仓 | — | — | 不在 OLK 产品 scope，加进来 70%+ 重复（详见 FAQ Q9）|
+| **不做** | semantic embedding | — | — | 违反 ADR-001；我们用 BM25 + graph 替代 |
+
+### 8.3 专家观点 review 总结
+
+外部专家提出的 5 个核心点对照：
+
+| 专家观点 | 我们的状态 |
+|---|---|
+| "双层 commit graph（upstream + distro）" | ✅ 已做：OLK = distro 层，`upstream_commit` 物化 60,824 桥 |
+| "LLM 不直接看 commit，先经图谱缩上下文" | ✅ ADR-019 + ReAct + cross-graph 就是这设计 |
+| "commit 是因果图，不是文本知识" | ✅ ADR-001 拒绝 embedding 的根本理由 |
+| "patch lineage / Fixes-chain 物化" | ❌ **重大缺口 — 87K 数据在手未建图谱**，P0a 立刻补 |
+| "跨 distro 采集 Ubuntu/RHEL/Android" | ⚪ 不适用：OLK 单 distro 定位（FAQ Q9 论证）|
 
 ## 9. 本会话已落地的改进（2026-05-25）
 

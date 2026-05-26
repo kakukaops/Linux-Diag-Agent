@@ -2,6 +2,573 @@
 
 ---
 
+## Q10：外部专家说要建"commit lineage 图"采多个 distro 仓 + 加 embedding，我们对照下当前差距？
+
+review 一位 Linux 内核专家的建议（2026-05-26）。专家提了 5 个核心点，我们用 DB 数据逐条对照：
+
+### ✅ 已经做了的（专家观点与我们设计一致）
+
+| 专家观点 | 我们的状态 |
+|---|---|
+| "双层 commit knowledge graph"（distro + upstream） | ✅ OLK 是 distro 层，`kernel_commit.upstream_commit` 字段物化了 **60,824** 个 OLK↔mainline 桥 |
+| "LLM 不直接看百万 commit，先经图谱缩上下文" | ✅ ADR-019 Hybrid Agent + ReAct + cross-graph 就是这设计 |
+| "commit 不是文本，是因果图" | ✅ ADR-001 拒绝 embedding 的根本理由就是这个 |
+| "三层结构：原始索引 / 语义关联 / LLM 推理" | ✅ 跟 ADR-025 L1/L2/L3 + ReAct 同构 |
+
+### ❌ **重大缺口**（专家点出我们没意识到的）
+
+| 缺口 | DB 实测 | 影响 |
+|---|---|---|
+| **`Fixes:` chain 未物化** | `kernel_commit.fixes_refs` 数组字段已存 **87,750** 行（commit body 87,534 行含 Fixes trailer），**但没建 `link_commit_fixes` 表** | patch lineage 当前要扫文本，应该是 O(1) JOIN |
+| **Revert chain 未物化** | **5,971** 个 commit 以 "Revert ..." 开头 | 专家强调的"被 revert 又 redesign 又 backport"链当前查不到 |
+| **subsystem 字段 99% NULL** | 仅 22.9% 填充（多在 60K backport 里）| 没法按"mm 子系统 / net 子系统"过滤检索 |
+| **kernel.org mainline 仓未真入库** | DB 只有 **958 个 stub** 占位（ADR-018 Phase B 没真跑）| 60K OLK backport 的 `upstream_commit` SHA 是**悬空指针** |
+| **stable git 仓未入库** | 0 | `cc stable@vger.kernel.org` 流程的实际 backport 链拿不到 |
+
+**最高 ROI**：`link_commit_fixes` —— 87K 关系**数据已在 `fixes_refs` 数组里**，只差一个 SQL 写入。**30 分钟工作，零抓取成本**。
+
+### ❌ **不适用我们**（专家通用建议 vs 我们的特定 scope）
+
+| 专家观点 | 我们的实际 |
+|---|---|
+| "Ubuntu / RHEL / Android / Debian 都要采" | OLK 单 distro 产品定位，加进来 70%+ 重复（详见 [Q9](#q9olk-仓库是否包含-kernelorg-官方仓的-commit如果加-debian-仓commit-会重复吗)）|
+| "semantic_embedding 字段必须有" | ADR-001 明确拒绝 embedding，用 BM25 + 图谱替代。专家是通用 LLM+RAG 思路，我们立项就走另一条路 |
+| "跨 distro patch lineage" | 不在 scope；OLK 内部 lineage 才是 |
+
+### 真正应该立刻做的
+
+**P0a：物化 `link_commit_fixes`**（30 分钟，零成本，87K 新边）—— 这是专家观点里 ROI 最高的一项，本会话确认数据已在手，只差落表。
+
+详细优先级排序见 [docs/v2/ProjectStatus.md §8.2](v2/ProjectStatus.md#82-来自外部专家-review2026-05-26-db-数据审计)。
+
+### 一个具体例子：为什么 Fixes-chain 重要
+
+专家举例："patch 依赖 6.6 锁机制 → backport 到 5.14 漏 memory barrier → RHEL 崩了"。
+
+对应到 OLK 场景**完全一样**：
+
+```
+mainline patch A (6.6)
+   ↓ OLK 抽过来
+OLK-5.10 backport A'      ← upstream_commit 字段已物化
+   ↓ 漏 barrier 导致 race
+OLK-5.10 fix B            ← 新 commit，body 里写 "Fixes: A'"
+```
+
+**第二条边 `Fixes: A' → B` 当前在 `fixes_refs` 里但没建图谱**。建好后 agent 拿到"OLK-5.10 race" → 跳 A' → 顺 `link_commit_fixes` → B → 拿到修复，纯 ID JOIN。
+
+---
+
+*相关问题：Q9（不采 Debian 的原因）· Q5（图谱结构）· Q1（图谱构建机制）*
+
+---
+
+## Q9：OLK 仓库是否包含 kernel.org 官方仓的 commit？如果加 Debian 仓，commit 会重复吗？
+
+三个不同的事，用 DB 真实数据分开说。
+
+### 一、OLK 仓库**不**完全包含上游 commits
+
+OLK 是**分叉（fork）**，不是超集。从 DB 实测：
+
+| 类别 | 数量 | 占比 | 解释 |
+|---|---|---|---|
+| `origin='olk'` 总计 | **1,299,052** | 100% | 我们抓的 OLK 全部 commit |
+| └ `inclusion=mainline` 标记 backport | 14,081 | 1.1% | 从 mainline 选了一个 commit 回移过来 |
+| └ `inclusion=stable` 标记 backport | 46,743 | 3.6% | 从 stable 选了一个 commit 回移过来 |
+| └ 其他 (`hulk`/`iommu`/...) | ~4,300 | 0.3% | openEuler 自家或厂商专有 |
+| └ **NULL（无 inclusion 头）** | **1,239,132** | **95.4%** | openEuler 原生 commit / MR merge commit |
+| `origin='mainline'`（stub 行）| 958 | — | linker 自动建的占位行（没有 body）|
+
+**关键事实**：
+
+1. **OLK 1.3M commits 里只有 ~4.7% 是 upstream backport** — 那 60K 个 commit 在 commit body 里写了"从 mainline 哪个 commit 来"（`upstream_commit` 字段），引用了上游 SHA
+2. 这 60K **backport commit 自己有新的 OLK hash**，跟 upstream 的 hash 不一样（git fork 的特性）
+3. **本地 DB 里没有 mainline kernel.org 仓的 commit metadata** — 60K 引用指向的上游 SHA 不在本地（除了 958 个 stub 占位）
+
+```
+┌────────────────────────────────────────────┐
+│  OLK 仓 (我们已抓)                          │
+│  1.3M commits                              │
+│                                            │
+│  ┌──────────────────────────────────┐      │
+│  │ 60K backport commits             │      │
+│  │ (有 upstream_commit SHA 引用)    │──────┼──→  上游 mainline / stable
+│  └──────────────────────────────────┘      │     (我们 DB 没有正本)
+│                                            │
+│  ┌──────────────────────────────────┐      │
+│  │ 1.24M openEuler-native commits   │      │     ← 上游永远没有
+│  │ (无 upstream，独立 patch)        │      │
+│  └──────────────────────────────────┘      │
+└────────────────────────────────────────────┘
+```
+
+如果要"看到上游 commit 本身的 metadata（mainline 作者 / 日期 / 进入哪个 mainline release tag）"，**得单独抓 kernel.org mainline 仓**。这是 ADR-018 提到但还没真正跑的事（DB 里只有 958 个 stub 占位）。
+
+### 二、Debian 仓加进来 — **绝大部分会重复**
+
+不是 hash 重复，是**信息上的重复**。Linux 发行版内核都做同样的事：
+
+```
+                kernel.org mainline (Linus 本尊)
+                       │
+                ┌──────┴──────┐
+                ↓             ↓
+            stable v6.6.y   stable v5.10.y
+                │             │
+       ┌────────┼─────────────┼─────────┐
+       ↓        ↓             ↓         ↓
+      OLK    Debian        Ubuntu      RHEL
+      fork    fork          fork       fork
+       │        │             │         │
+      OLK    Debian        Ubuntu     RHEL
+      自己   自己            自己      自己
+      patch   patch         patch     patch
+```
+
+每个 distro 都干这三件事：
+1. 以 mainline / stable 某个版本为基线
+2. 挑一批 stable backport 应用（**大量重叠** — 各 distro 选的 backport 集合 70%+ 一样）
+3. 加一些 distro-specific patch（**唯一的** — 这部分才是 Debian 独有）
+
+**假设抓 Debian 入库**：
+
+| 类别 | 估计占比 | 与 OLK 关系 |
+|---|---|---|
+| Debian 选的 stable backport | ~70-80% | **跟 OLK 的 stable backport 选集大量重叠**（diff 内容一样，hash 不同）|
+| Debian 自家 patch（Debian-specific 安全/集成）| ~15% | OLK 没有 |
+| 其他（merge / 元数据 commit）| ~5% | OLK 也类似 |
+
+所以 Debian 1M commits 里，可能 70%+ 在内容上跟 OLK 已有 commit 是同一个 upstream 的应用。但**每条都有新的 Debian hash**，所以 DB 不会真"去重"。
+
+**加 Debian 真正的收益**：
+
+| 收益 | 量级 | 评价 |
+|---|---|---|
+| Debian-specific 安全 patch | ~15% 量 | 只对**诊断 Debian 内核**有用，OLK 用户用不上 |
+| Debian 选哪个 backport 优先 | 决策信号 | 看 Debian 选了 OLK 没选的 patch → 提示 OLK 也许该加 |
+| Cross-distro CVE 修复对比 | 间接 | 通过 NVD CVE 就能拿到，不一定要 Debian 仓 |
+| 邮件/issue 桥接 | 几乎 0 | Debian 用自己的 BTS（debbugs），跟 gitee/atomgit 完全不通 |
+
+**结论**：加 Debian 对 openEuler 故障诊断的**边际价值很低**。除非产品定位扩展到"通用 Linux distro 诊断"，否则不划算。
+
+### 三、要扩仓库的话，按 ROI 排序
+
+| 优先级 | 仓库 | 边际收益 | 工作量 | 评价 |
+|---|---|---|---|---|
+| **P0** | **kernel.org mainline (linus's tree)** | 高 — 把 60K 上游 SHA 从 stub 升级为真正的 commit metadata，能跨 Link/Fixes/CVE trailer 进一步扩图 | 中（500K+ 上游 commits）| **真正值得做**，对应 ADR-018 Phase B |
+| **P0** | **kernel.org stable (linux-stable.git)** | 中高 — `cc stable@vger.kernel.org` 流程的真实 backport 路径在这里 | 中 | 跟 mainline 一起做 |
+| P2 | RHEL / CentOS Stream | 中 — Red Hat 内核做的 backport 选择可参照 | 高（需企业渠道）| 法务风险 |
+| **P3** | Debian | 低 — 大量内容跟 OLK 重叠 | 中（git 公开）| 除非要诊断 Debian，否则不划算 |
+| P3 | Ubuntu / SUSE | 低 | 同上 | |
+
+### 真正的 v2.1 建议
+
+如果要"让图谱更稠密"，**第一步该做的是 kernel.org mainline + stable 入库**，不是 Debian：
+
+1. mainline + stable 一旦入库，OLK 60K backport 的 `upstream_commit` SHA 就能 JOIN 到真实 commit 上（现在是悬空指针）
+2. 上游 commit 自己又有 `Link:` / `Fixes:` / `Cc: stable@` / `CVE:` trailer，linker 能继续往外扩
+3. 整个图谱从 1.3M 节点 + 92K link 扩到 ~3M 节点 + 几十万 link
+
+这是 **ADR-018 Phase B** 原本规划要做的，目前似乎没真正跑（DB 里只有 958 个 stub）。
+
+### 一句话总结
+
+- **OLK ⊄ mainline**：OLK 是 fork，1.3M commits 里只有 4.7% 是 backport（hash 不同的副本），其余 95% 是 openEuler 原生
+- **mainline 真正的 metadata 我们没有**，要扩仓库的话**这是 P0**，不是 Debian
+- **加 Debian 性价比低**：内容大量重叠 OLK，桥接也走不通 distro 自己的 bug 系统
+
+---
+
+*相关问题：Q5（图谱结构）· Q2（数据源） · 参考：[ADR-018](v1/adr/ADR-018-commit-source-olk-kernel.md)*
+
+---
+
+## Q8：我们是不是几乎有了全部的内核邮件讨论数据？那 180 天的数据是什么？
+
+**不是**。容易让人误解。精确说：
+
+### 我们有的 ≠ 全部内核邮件
+
+| 维度 | 实际状态 |
+|---|---|
+| 全部 LKML 历史邮件（粗估）| 24 年 × 各 list 总量 ≈ **几千万条** |
+| 我们 DB 里 | **114,923 条**（约万分之一-千分之一）|
+| **我们 DB 里**对**图谱构建有用的部分** | **99.1%** ✓ |
+
+**我们不是"几乎有全部邮件"，是"几乎有全部被 commit 引用过的邮件"**。这两者差几个数量级。
+
+### 那 114,923 条究竟是哪些？分两块
+
+```
+                          总计 114,923
+                              │
+            ┌─────────────────┴─────────────────┐
+            │                                   │
+       ~26K 条                             ~88K 条
+       Reference-driven backfill           Bulk 180d
+       (ADR-025 v2 主路径)                 (v1 残留)
+            │                                   │
+       怎么选？                            怎么选？
+       扫 commit body 里的                 抓 linux-mm + stable
+       Link: trailer，按 msg-id            两个 list 的最近 180 天
+       逐封抓                              全部邮件
+            │                                   │
+       覆盖范围：                          覆盖范围：
+       任意年份、任意 list                  只这两个 list、只最近半年
+       (只要被任意 commit 引用)            (无论是否被引用)
+            │                                   │
+       价值：                              价值：
+       图谱链接                            BM25 检索备用语料
+       (link_commit_message 33K 行)        (找未被引用的相关讨论)
+```
+
+### 两块本质区别
+
+**Reference-driven 26K** — **目标性的**，由 commit 决定。一条 commit 里写了 `Link: ...`，我们才去抓这封信。所以它**100% 跟 commit 有桥**，是 cross-graph 的骨架。
+
+**Bulk 88K** — **广播性的**，按 list+时间窗口下载，不管有没有被引用。**绝大多数这 88K 邮件没有任何 commit 引用过它**，所以它**不进** `link_commit_message`，对图谱构建**无贡献**。
+
+### 为什么 bulk 只选 linux-mm + stable 两个 list？
+
+| list | 内容 | 诊断价值 |
+|---|---|---|
+| `linux-mm` | 内存管理子系统讨论 | OOM / 内存碎片 / cgroup 相关 |
+| `stable` | stable 内核 backport 讨论 | CVE 修复 / 关键补丁回移 |
+
+这两个 list 是**故障诊断最常碰到的子系统**。bulk 它们提供"未被 commit 引用但与诊断主题相关的近期讨论"。
+
+### 没有的部分
+
+| 缺什么 | 量级 | 影响 |
+|---|---|---|
+| 其他 list 的近期邮件（linux-fs / linux-net / kvm / sched / ...）| 几十万条/月 | 这些 list 上的讨论我们本地没有 |
+| 任意 list 的历史邮件（不被 commit 引用的） | 几千万条 | 同上 |
+| 任何"用户报告但还没人写 patch"的讨论 | 大量 | 同上 |
+
+### 用 L3 lore live search 补救
+
+诊断时如果**用户问的事**我们 L2 里没有，agent 走 `search_lkml` 工具，去 lore.kernel.org 在线搜全归档（这就是 ADR-025 L3 层）。例如：
+- 用户问"recent ext4 corruption" → L2 里没有 linux-fs 讨论 → L3 现搜 → 拿到结果 → 缓存回 L2
+
+### 完整链条
+
+| 用途 | 数据来源 |
+|---|---|
+| Cross-graph 链接（commit ↔ msg） | ✅ L1+L2 本地（26K 覆盖被引用集合 99.1%）|
+| BM25 检索"近期讨论"两个核心 list | ✅ L2 bulk 88K（180d） |
+| 其他 list / 历史讨论 | ✅ L3 在线 lore search 现搜 |
+
+### 一句话总结
+
+我们**有**：
+- 所有 commit 引用过的邮件（99.1%）— 图谱骨架完整
+- 两个核心 list 的最近半年（bulk）— 检索备用语料
+- 通过 L3 在线检索拿到其他
+
+我们**没有**：
+- 全部 LKML 历史（百万级），也**不需要** — 用 L3 现取
+
+ADR-025 设计的核心**就是不下载全部**：只把 commit 桥需要的物化下来，其他靠在线发现。180 天 bulk 那 88K 其实是 v1 时代的过度物化产物，**可以删掉一半**，对图谱无伤。
+
+---
+
+*相关问题：Q7（180 天 LKML 数据足够构建图谱吗）· Q5（图谱结构）*
+
+---
+
+## Q7：我们只下载了 180 天的 LKML，对构建图谱足够吗？是否需要下载更长时间？
+
+**不需要**。先纠正一个前提：**DB 里的 LKML 不止 180 天**。
+
+### "180 天"是配置项，不是 DB 实际内容
+
+| | 你的理解 | DB 实测 |
+|---|---|---|
+| LKML 数据范围 | 180 天 | **2002-06-11 → 2026-05-21（24 年）** |
+| LKML 总量 | ~ 180 天那点 | **114,923 条** |
+
+`configs/local.yaml` 里的 `lookback_days: 180` 只是 **bulk 摄入模式**的窗口（用于 linux-mm + stable 两个 list 的批量抓取）。DB 里实际有两套数据来源：
+1. **Bulk 180 天**：抓了 ~80K 条最近邮件
+2. **Reference-driven backfill**：扫所有 commit body 里的 `Link: lore.kernel.org/...` trailer，把被引用的 message-id **逐个**抓回 — **无时间限制**，最早抓到 2002 年
+
+按邮件本身日期分布（实测）：
+```
+2026: 74,842   ← bulk 主要在这
+2025: 15,254
+2024:  2,761
+2023:  5,627
+2022:  6,088
+2021:  4,975
+2020:  4,161
+2019:  1,162
+2018:    27
+...有少量直到 2002
+```
+
+### 图谱构建覆盖率：99.1%（实测）
+
+| 维度 | 数据 |
+|---|---|
+| OLK commits 引用的 distinct lore msg-id | **26,221** |
+| 已在 lkml_message | **25,984 (99.1%)** |
+| **真实 GAP** | **237** |
+
+**按 commit 年份拆，每一年都 98+%**：
+```
+2026: 99.4%   2025: 99.7%   2024: 99.5%   2023: 99.4%
+2022: 98.7%   2021: 99.0%   2020: 99.1%   2019: 98.3%
+```
+
+不存在"老 commit 引用的邮件抓不到"这种问题。
+
+### 那 237 个 GAP 是什么？
+
+不是下载策略问题，**是 lore.kernel.org 自己返回 404**。看 sample：
+
+```
+02wrx9Xs@mwanda                                           ← 残缺/伪 msg-id
+0G72j@mwanda                                              ← 同上
+0000000000000e7156059f751d7b@google.com.                  ← 末尾多 .
+02494cb8-2aa5-1769-f28d-d7206f284e5a@digikod.net]         ← 末尾多 ]
+```
+
+这是**regex 提取 bug** —— 从 commit body 抓 msg-id 时把后面的标点 `.` `]` `,` 一起抓进去了，导致传给 lore 的 msg-id 不合法。**修 regex 能救回部分，扩下载救不回任何一个**（bulk 用同一个 lore 后端，对错误 ID 同样 404）。
+
+### "扩 LKML 时间窗对图谱的收益" 量化
+
+| 方案 | 能多覆盖几个 GAP | 工作量 |
+|---|---|---|
+| 扩 bulk 到 730 天 | **0** | 几小时下载 |
+| 扩 bulk 到 5 年全量 | **0** | 几天下载 |
+| 扩 bulk 到 30 年全量 | **0** | 一周以上 |
+| **修 regex 末尾标点**（真正可行）| ~150-200 / 237 | 30 分钟 |
+
+收益是 **0** 因为 GAP 不是"数据没下"，是"那些 msg-id 在 lore 上根本不存在"。
+
+### 结论
+
+**不需要扩 LKML 下载**。99.1% 覆盖已经达到图谱构建的实际上限。剩下 0.9% 的修复路径是**清洗 regex 提取**，不是更多下载。
+
+详细的"全部内核邮件 vs 我们有的"对照见 [Q8](#q8我们是不是几乎有了全部的内核邮件讨论数据那-180-天的数据是什么)。
+
+---
+
+*相关问题：Q8（我们有的 vs 全部 LKML）· Q1（图谱构建机制）*
+
+---
+
+## Q6：为什么 commit 是天然的 hub？
+
+不是数据库设计偏好，是**内核生态的工作流自然产生的**。具体四个原因：
+
+### 1. Commit 是唯一"发货"的东西
+
+```
+用户拿到的内核 = 一连串 commit
+用户拿不到 = lkml 邮件、bugzilla、CVE 描述
+```
+
+当 OLK-6.6 出来时，里面装的就是一系列 commit 的累积。其他东西是**伴随产物**：邮件是讨论它的，bug 是因它而起的，CVE 是描述它漏洞的。**Commit 是被打包发出去的载体本身**。所以引用一个 commit 比引用其他任何东西都更稳定可靠。
+
+### 2. Commit hash 是宇宙唯一的标识
+
+```
+"commit 892962a26026"       → 全球唯一，永远不变，可加密验证
+"LKML 邮件 5"               → 哪个 list？哪个 thread？
+"bug 1234"                  → 哪个 bugzilla？(kernel.org / gitee / atomgit / Red Hat...)
+"CVE-2024-50022"            → 唯一但定义晚，commit 早于 CVE
+```
+
+SHA-1 哈希是 Linus 选择 git 的根本原因：你说"commit abc123"全世界都指同一份代码。但你说"bug 1234"必须先说**哪个平台的 bug**（我们今天的图谱里就有 3 套不同的 bug ID 空间：gitee / atomgit / bugzilla.kernel.org，全互不通用）。
+
+### 3. 内核开发的工作流自然汇聚到 commit
+
+```
+讨论                  实现              后果
+─────                ─────             ─────
+LKML 邮件   ─→  patch 提交 ─→  COMMIT  ─→  bug 报告（用 Fixes: 引用它）
+RFC 设计   ─→  实现尝试   ─→     ↓      ─→  CVE 公告（references 字段引用它）
+ML 评审    ─→  v2/v3/... ─→     ↓      ─→  下游 distro backport（OLK 引用上游 SHA）
+                                ↓      
+                          mainline tag  ─→ stable backport ─→ OLK 入库
+```
+
+**commit 是 "before" 和 "after" 的分界线**。在它之前的一切（讨论、RFC、争论）是为了形成这个 commit；之后的一切（用户报告、安全公告、backport）是这个 commit 产生的后果。所有信息流自然以它为中心收敛 + 发散。
+
+### 4. 内核社区 20+ 年强制的 trailer 文化
+
+Linus 在 2005 年开始就要求 commit message 必须遵循特定结构。今天几乎每条 mainline commit body 都有这些字段之一：
+
+```
+Fixes: abc123       ← 修复哪个 commit
+Link: https://lore.kernel.org/...   ← 在哪讨论的
+Reported-by: Foo Bar  ← 谁报告的
+Reviewed-by: ...    ← 谁审过
+Tested-by: ...      ← 谁测过
+Cc: stable@vger.kernel.org   ← 标记 backport 候选
+Closes: https://bugzilla.kernel.org/...
+CVE: CVE-2024-50022
+```
+
+OLK 在此基础上又加了自家约定：
+
+```
+mainline inclusion          ← OLK 自定义
+from mainline-v6.13-rc1
+commit abc1234567...        ← 上游 SHA
+category: bugfix
+bugzilla: https://gitee.com/openeuler/kernel/issues/XYZ
+CVE: CVE-2024-50022
+[ Upstream commit abc1234 ]
+```
+
+**所有这些 trailer 都把 commit 当作 anchor，把外部世界（邮件、bug、CVE、上游版本）作为它的属性挂在它身上**。
+
+我们的 linker 做的事情，本质上就是**把已经存在于 commit body 里的 trailer 文本，物化成结构化关系表**。链路不是我们设计的，是社区写出来的。
+
+### 反证：如果不用 commit 作 hub 会怎样？
+
+试想以 LKML 邮件为中心建图：
+- 邮件没有 trailer 系统（你不会在邮件里写 "Fixes: <某 commit>"）
+- 邮件 ID `message_id` 不全局唯一（lore 转发会变）
+- 邮件没有"发货"语义，用户拿不到邮件
+- 同一个 bug 可能跨多个 list 讨论，没有规范化
+
+或者以 bug 为中心：
+- 不同平台 ID 互不通用（gitee `IDCSJV` ≠ atomgit `8929` ≠ kernel.org `12345`）
+- bug 状态会变（reopen / dup-of）
+- bug 不出现在 commit 里就引用不到
+
+只有 commit 同时满足：
+1. ✅ 全球唯一不变 ID
+2. ✅ 是被分发的真实产物
+3. ✅ 有强制的 trailer 引用其他实体的文化
+4. ✅ 在内核工作流里是天然汇聚点
+
+所以 **"commit 作 hub"** 不是架构决策，是承认数据本身的结构。
+
+---
+
+*相关问题：Q5（图谱结构）· Q1（图谱构建）*
+
+---
+
+## Q5：图谱的结构是什么样的？是通过 commit id 把 bug / message / CVE 关联起来吗？
+
+理解基本正确，但更准确说是**多种节点类型 + 多种边类型**，commit 只是**最常见的中心节点**之一，不是唯一桥梁。
+
+### 一、节点（8 种"东西"）
+
+```
+Discussion 子图                Commit 子图                  Issue/CVE 子图
+──────────────                ──────────────                ──────────────
+lkml_thread        ─父─→      kernel_commit                bug
+ ↑                              ↑ upstream_commit            (source=gitee/atomgit/
+lkml_message                  another kernel_commit         bugzilla_kernel)
+ ↑ (一封邮件)                  (OLK ← mainline 桥)
+lkml_patch                                                  cve
+lkml_review                                                  (fix_commits JSONB)
+                                                            syzbot_crash
+```
+
+### 二、边（关系类型）
+
+**显式 link 表（3 张，跨子图）：**
+| 表 | 起点 | 终点 | 行数（当前）|
+|---|---|---|---|
+| `link_commit_message` | kernel_commit | lkml_message | 33,099 |
+| `link_commit_cve` | kernel_commit | cve | 401 |
+| `link_commit_bug` | kernel_commit | bug | **58,388** |
+
+**隐式 FK 边（子图内）：**
+| 表 | 字段 | 指向 | 含义 |
+|---|---|---|---|
+| `kernel_commit` | `upstream_commit` | 另一个 kernel_commit | OLK ↔ mainline 上游桥 |
+| `lkml_message` | `thread_id` | lkml_thread | 邮件属于哪个线程 |
+| `lkml_patch` | `thread_id`, `message_id` | lkml_thread, lkml_message | patch 邮件 |
+| `lkml_review` | `message_id` | lkml_message | Reviewed-by / Acked-by |
+| `cve` | `fix_commits` (JSONB SHA list) | kernel_commit | NVD 指明的修复 commit |
+
+### 三、为什么 commit 是中心
+
+不是设计选择，是**内核生态的真实事实**：
+
+| 维度 | 体现 |
+|---|---|
+| 邮件 → commit | `Link: lore.kernel.org/.../<msg-id>` trailer 在 commit body |
+| bug → commit | `bugzilla: gitee.com/.../issues/IDCSJV` trailer 在 commit body |
+| CVE → commit | NVD references 字段含 GitHub/kernel.org commit URL |
+| 上游 ↔ OLK backport | OLK commit body 顶部的 inclusion 头 |
+
+**所有桥接证据都在 commit body 的 trailer 里**。我们的 linker 只是把这些纯文本 trailer **物化成结构化关系**。详细原理见 Q6。
+
+### 四、可视化（含数量）
+
+```
+                                         link_commit_message
+                       ┌──────────────────────────────────────────────┐
+                       │                  33,099                       │
+                       ↓                                                │
+                 lkml_message ◄── thread_id ── lkml_thread             │
+                 (114,923)                                              │
+                                                                        │
+                                                                  kernel_commit
+                                                                  (1,300,010)
+                                                                        │
+                                                                        │ link_commit_cve
+                                                                        │ 401
+                                                                        ↓
+                                                                       cve
+                                                                       (15,502)
+                                                                        │
+                                                                  ─────┼─────
+                                                                        │ link_commit_bug
+                                                                        │ 58,388
+                                                                        ↓
+                                                                       bug
+                                                                       gitee:    3,861
+                                                                       atomgit:    467
+                                                                       bzkernel: 3,700
+                                                                       (= 8,028)
+```
+
+### 五、实际多跳遍历的例子
+
+假设用户报 `OOM kill in cgroup`：
+
+```
+1. BM25 lkml 路命中：
+   message_id = "20210913230759.2313-1-daniel@iogearbox.net"
+   subject: "[PATCH] bpf, cgroups: Fix cgroup v2 fallback..."
+
+2. 跳 link_commit_message → 拿到对应 commit:
+   8520e224f547 "bpf, cgroups: Fix cgroup v2 fallback on v1/v2 mixed"
+
+3. 顺 kernel_commit.upstream_commit → mainline commit metadata（验证修复进了哪个 mainline）
+
+4. 顺 link_commit_bug → 拿到 gitee/atomgit issue:
+   gitee#I3J87Y: "【OLK-5.10】高并发场景下..." (含完整用户报告 + 堆栈)
+
+5. 顺 link_commit_cve → 看是否对应已公开 CVE
+```
+
+每一跳都是**纯 ID JOIN**，O(log N)，不需 LLM、不需 BM25、不需相似度。这就是图谱的核心价值。
+
+### 六、跟"通过 commit id 关联"的对照
+
+**95% 正确**。补充两点：
+1. 还有 LKML 子图内部的线程 DAG（不通过 commit）
+2. 还有 OLK commit ↔ mainline commit 之间的桥（commit ↔ commit）
+
+但核心机制就是：**commit 是 OLK 生态的天然 hub**，所有外部知识源都用 commit body trailer 引用，所以图谱以 commit 为中心是数据决定的，不是设计偏好。
+
+---
+
+*相关问题：Q6（为什么 commit 是 hub）· Q1（图谱构建机制）*
+
+---
+
 ## Q4：智能体的诊断思路是否和一个有经验的内核工程师类似？图谱的作用是什么？
 
 是的，**v2 的设计明确是模仿一个有经验的内核工程师**排查故障的思路。让我把"工程师做什么 / agent 怎么对应 / 图谱在哪里发挥作用"对照展开。

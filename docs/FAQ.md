@@ -2,6 +2,117 @@
 
 ---
 
+## Q12：本系统的设计思路是什么？（一份简要总览）
+
+### 一句话
+
+**信任内核社区 20 年的 trailer 文化，把这种"自带元数据的 commit 文本"物化为可 JOIN 的图谱，让 LLM 沿图走而不是猜。**
+
+### 五个核心原则
+
+#### 1. 无 embedding，全部结构化（ADR-001）
+不用向量数据库，不算文本相似度。所有关联**必须有显式文本证据**（`Fixes: <sha>` / `Link: <url>` / `bugzilla: <id>` 等 trailer）。代价：召回受 BM25 关键词限制。收益：100% 可审计、零 hallucinate。
+
+#### 2. Commit 是天然 hub
+不是设计选择，是内核生态事实 —— commit 是唯一"发货物"、唯一全球唯一 ID、唯一被强制 trailer 规范引用其他实体的载体。所有外部知识（邮件 / bug / CVE）都通过 commit body 的 trailer 反向指向 commit。我们的工作是**把这些纯文本引用兑现为 link 表**。详见 [Q6](#q6为什么-commit-是天然的-hub)。
+
+#### 3. 三阶段 Hybrid Agent（ADR-019）
+
+```
+Triage（确定性）→ Investigation（ReAct LLM）→ Report（确定性）
+```
+
+- 前后两阶段**逻辑硬编码**（事件抽取、路由分类、报告渲染）—— 不让 LLM 决定它擅长不了的事
+- 中间 ReAct loop 才让 LLM **沿图谱走 + 调 22 个工具** —— 让它做它擅长的（推理 + 工具选择）
+- 模仿"有经验的内核工程师查问题"的真实工作流（症状 → 代码 → commit → 关联资料），见 [Q4](#q4智能体的诊断思路是否和一个有经验的内核工程师类似图谱的作用是什么)
+
+#### 4. 三层知识数据（ADR-025）
+
+```
+L1  本地 link 表          ← 永远本地，是图谱骨架
+L2  本地内容缓存          ← 按需累积（reference-driven，不 bulk-by-date）
+L3  在线服务（lore / 文档）← 缺啥现取，缓存回 L2
+```
+
+**不是"全量下载"也不是"纯在线"**，是"骨架本地 + 内容按需"。LKML 99.1% 被引用集本地化用的就是这套策略（见 [Q7](#q7我们只下载了-180-天的-lkml对构建图谱足够吗是否需要下载更长时间)/ [Q8](#q8我们是不是几乎有了全部的内核邮件讨论数据那-180-天的数据是什么)）。
+
+#### 5. PG 单一真源
+所有图谱节点 + 边都在 PostgreSQL。Neo4j 规划过但未启用 —— 当前规模（< 1M 边、多数 ≤ 3 跳查询）PG 完全够用。**简单胜过精致**。
+
+### 架构层次
+
+```
+┌────────────────────────────────────────────────────┐
+│ 用户输入：dmesg / sosreport / vmcore / 自然语言      │
+└────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────── Triage（确定性）─────────────────────┐
+│ parse_input → extract_events → detect_taint_and_hw │
+│ → classify_fault_and_route (5 路：kernel / vmcore /│
+│   hardware / change / unknown)                     │
+└────────────────────────────────────────────────────┘
+                         ↓
+┌─────────── ReAct Investigation（M22）──────────────┐
+│  路由感知 system prompt + 22 个工具                 │
+│  LLM 在如下空间里自由选择：                          │
+│    类 A：7 路 BM25 + cross-graph injection         │
+│    类 B：log 解析（dmesg / sosreport / call trace） │
+│    类 D：代码 + commit（CodeGraph + git diff）      │
+│    类 F：vmcore 检查（drgn 5 模式）                 │
+│    类 H：硬件（MCE / EDAC / IPMI / dmidecode）      │
+│                                                    │
+│  循环到 LLM 输出 <final_answer> 或 <insufficient>   │
+│  退出条件：max_iter / token_budget / repeat_fail   │
+└────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────── Report（确定性）─────────────────────┐
+│  bind_claims（声明 ↔ 证据 ID 绑定，不可溯源标 ⚠）   │
+│  → generate_report（Markdown + JSON 双格式）       │
+└────────────────────────────────────────────────────┘
+```
+
+### 数据流的本质
+
+```
+原始数据                     trailer 结构化              JOIN 物化               agent 使用
+────────                    ──────────────              ─────────              ──────────
+OLK git 仓 ──────→ kernel_commit
+                  (含 fixes_refs[],
+                   upstream_commit)
+                                  │
+                                  ↓ Linker 正则扫 body
+                                  ↓ + JOIN 另一端是否在 DB
+                                  ↓
+                            link_commit_* 表 ──────→ Agent 用 SQL JOIN 多跳遍历
+                            (184K 边)                  (Q11 例子: 5 跳 ms 级)
+                                  ↑
+LKML / Bug / CVE ─→ 各自表 ────┘
+(reference-driven)
+```
+
+### 几个"刻意不做"
+
+| 不做的事 | 原因 |
+|---|---|
+| Embedding / 向量召回 | ADR-001 — 内核 trailer 文化够用，加 embedding 引入 hallucinate 风险 |
+| 多 distro（Ubuntu / RHEL / Debian）| 70%+ 重复 OLK 内容，跨 distro bug 系统也不通（[Q9](#q9olk-仓库是否包含-kernelorg-官方仓的-commit如果加-debian-仓commit-会重复吗)）|
+| Bulk LKML 全量下载 | 几千万邮件无意义，只需被 commit 引用的 26K（[Q7/Q8](#q7我们只下载了-180-天的-lkml对构建图谱足够吗是否需要下载更长时间)）|
+| Neo4j 双写 | PG 单 DB 够用，双写引入对账成本 |
+| 7 路按故障类型选择性查 | ADR-013 全量触发，防止路由误判丢证据 |
+| LLM 自己决定每个工具的实现 | tool 是确定性 Python，LLM 只决定调哪个 / 传什么参数 |
+
+### 一句话总结架构哲学
+
+**"内核 commit 是因果图，不是文本知识"** —— 我们的任务是发现这张图、物化它、让 LLM 沿图推理，而不是把 commit 当成 RAG 文本块去匹配。
+
+ADR-001（无 embedding）+ ADR-019（hybrid 三阶段）+ ADR-022（gitee/atomgit bug）+ ADR-025（三层数据）四个 ADR 串起来就是这套思路的完整骨架。
+
+---
+
+*相关问题：Q11（图谱构建原理）· Q6（commit 为何是 hub）· Q4（工程师思路对照）*
+
+---
+
 ## Q11：commit 图谱构建的原理是什么？
 
 ### 核心一句话

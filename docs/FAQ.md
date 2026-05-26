@@ -2,6 +2,143 @@
 
 ---
 
+## Q13：业界有没有类似的做法或开源项目？
+
+按"相似维度"分四类，每类列最接近的项目 + 跟我们的差异。
+
+### 一、最接近的：**AUTOSEL**（Sasha Levin / kernel.org）
+
+> Linux 内核社区**自家的** ML 工具，用来自动识别 mainline patch 是否该 backport 到 stable 分支。
+
+| 维度 | AUTOSEL | 我们 |
+|---|---|---|
+| 数据源 | mainline commits + stable backports | OLK + mainline + LKML + bug + CVE |
+| 提取信号 | commit 文本（含 trailer）| commit + trailer + cross-graph |
+| 目标 | "这个 patch 该不该 backport" 二分类 | 故障诊断 + 根因分析 |
+| 模型 | ML 分类器（非 LLM） | LLM ReAct agent |
+| 图谱 | 无 | 184K link 行 |
+
+**精神上最相似** —— "信任 trailer + 内核领域专项 + 不用 embedding"。但作用范围窄得多，只做 backport 推荐。
+
+---
+
+### 二、数据模型最相似：**OSV（Google Open Source Vulnerabilities）**
+
+> 漏洞数据库 + 关联图：CVE ↔ 修复 commits ↔ 受影响版本。
+
+| 维度 | OSV | 我们 |
+|---|---|---|
+| 颗粒度 | package 级别 | commit 级别 |
+| 范围 | 多语言、多生态 | 内核单一 |
+| 关联强度 | CVE ↔ commit ↔ package | commit ↔ msg + bug + cve + fixes + revert |
+| 客户端 | OSV-Scanner CLI 扫包 | LLM 诊断 agent |
+
+**graph 物化思路相同** —— 都把"漏洞 ↔ 修复" trailer 解析成边。但 OSV 是数据服务（API），不带诊断。代码：[github.com/google/osv.dev](https://github.com/google/osv.dev)
+
+---
+
+### 三、学术界 — Linux 内核 LLM 诊断
+
+#### CrashFixer (2024 学术) — 最接近**目标**
+
+| 维度 | CrashFixer | 我们 |
+|---|---|---|
+| 目标 | Linux 内核 crash 自动修复 | 故障诊断（含 crash 但更宽）|
+| 输入 | crash log + repro | dmesg / sosreport / vmcore / 自然语言 |
+| top-1 accuracy | ~41.6%（公开数据）| 75%（我们 root-cause judge）|
+| Cross-graph | 无（论文未提）| 184K edges 物化 |
+| 工具 | code browsing + GDB + VM | 22 个 tool 跨 5 路 |
+
+**目标相近但架构未公开**。论文里描述的工具集跟我们 Class D + F 类似。
+
+#### LinuxFLBench / KernelGPT 等基准 — 是 benchmark 不是产品
+
+跟 `cases_v2.json` 一样定位 —— 标注好的 ground truth 数据集，供诊断 agent 跑分用。
+
+---
+
+### 四、通用 SRE / 代码 agent
+
+| 项目 | 类比 | 跟我们差异 |
+|---|---|---|
+| **K8sGPT** ([k8sgpt.ai](https://k8sgpt.ai/)) | LLM 诊断 Kubernetes | Kubernetes 领域；rule-based + LLM 摘要；无图谱 |
+| **Robusta Holmes** | SRE 故障诊断 agent | Cloud-native 范畴；走 Prometheus / log 等 |
+| **OpenSRE** | 开源 SRE 60+ tools | 通用基础设施；非 kernel 专项；走 ReAct |
+| **Google SRE Agent** + **Azure SRE Agent** | 同 | 闭源，类似设计（ReAct + tools） |
+| **Sourcegraph Cody** | 代码智能 + LLM | 跨仓库代码搜索；无 kernel commit 语义；无 LKML/bug 桥 |
+| **GitHub Copilot Workspace** | 代码 agent | 不诊断生产故障 |
+| **Aider** | repo-aware coding agent | 写代码而非诊断 |
+
+**架构很像（ReAct + tools），但 domain 知识不一样**。我们的 22 个 tool 是内核专用，他们的是通用 cloud / Kubernetes。
+
+---
+
+### 五、Trailer-mining 这条具体路径
+
+最相似的工具：
+
+#### b4 (Konstantin Ryabitsev / kernel.org)
+> 从 lore 抓 patch series + apply trailer（Reviewed-by / Acked-by 等）。
+
+类似 ingest 端，但**没建跨表图谱**，没诊断层。完全开源。
+
+#### lei (public-inbox / lore 搜索 CLI)
+> lore.kernel.org 的命令行客户端。
+
+我们 L3 用 lore Atom feed 跟它本质同源。
+
+#### 学术：PatchScope / PatchProvenance
+> repo-mining 论文，研究 patch lineage、Fixes-chain 等。
+
+跟我们 P0a/P0b 思路相同，**但停留在分析层面**，不是构建可用的图谱给 agent 调用。
+
+---
+
+### 六、跟我们最不一样的（多数 LLM RAG 项目）
+
+> "embeddings + vector DB + RAG" 是当前主流。
+
+| 项目 | 跟我们差异 |
+|---|---|
+| LangChain RAG demos | 走 embedding 路径 |
+| LlamaIndex | 同 |
+| 大量 "talk-to-your-codebase" 工具 | 都用 embedding |
+
+**我们 ADR-001 选了少数派路线**（无 embedding），原因是内核领域有结构化 trailer。换其他领域不一定能复制。
+
+---
+
+### 七、诚实评估：我们独特在哪？
+
+排除我可能不知道的项目，**当前公开项目里似乎没有**完全做这事的：
+
+| 我们做的 | 业界有这么做的吗？ |
+|---|---|
+| 跨 5 个内核数据源建图谱（commit + msg + bug + cve + syzbot）| ❓ OSV 做了 commit+CVE+package 但没 LKML/syzbot |
+| 物化 Fixes/Revert chain 成 link 表 | AUTOSEL 用类似数据但没物化为查询表；学术 PatchProvenance 论文有但不是工程产品 |
+| Hybrid 三阶段 (Triage 硬编码 + ReAct + Report 硬编码) | SRE agent 通常全 ReAct；我们的"前后端确定性"是 ADR-019 决策 |
+| 无 embedding 路线 + LLM ReAct | 反主流 |
+| OLK 单 distro 深度专项 | 多数项目要么通用要么 mainline-only |
+
+**至少在公开信息里**，我们这套组合 (kernel + trailer 物化 + Hybrid agent + no-embedding) 应该是没找到完全一致的对应物。
+
+---
+
+### 八、警告 — 我可能不知道的
+
+| 我可能漏掉的 | 影响 |
+|---|---|
+| 2025+ 学术论文 | 知识截止 2026-01，可能漏 2025 后期工作 |
+| 中文 OSS 社区 | 华为 / openEuler / 阿里云内部可能有未公开类似工作 |
+| 企业内部工具（RHEL、SUSE）| 大概率有类似的，但闭源 |
+| 不在主流 GitHub 上的项目 | gitee / gitlab 国内项目可能没见过 |
+
+---
+
+*相关问题：Q12（设计思路总览）· Q11（图谱构建原理）*
+
+---
+
 ## Q12：本系统的设计思路是什么？（一份简要总览）
 
 ### 一句话

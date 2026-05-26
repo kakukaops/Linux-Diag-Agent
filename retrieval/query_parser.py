@@ -21,16 +21,60 @@ _VERSION_RE = re.compile(
 )
 
 _PARSE_PROMPT = """\
-You are a Linux kernel expert. Extract structured retrieval parameters from the user's question.
+You are a Linux kernel expert. Translate the user's symptom description into
+search terms that would appear in a KERNEL DEVELOPER's commit message or
+patch discussion — NOT the user-facing words from the question.
 
-Return ONLY valid JSON with these fields (omit missing ones):
+CRITICAL — keyword generation rules:
+1. DROP user-application words: "java", "MySQL", "process name", "my server",
+   "diagnose", "how to", "system", "production".
+2. DROP generic non-kernel words: "memory", "limit", "error", "issue" (too broad).
+3. KEEP kernel-internal terms: function names (e.g. `__alloc_pages`,
+   `kswapd0`), subsystem identifiers (`memcg`, `vmscan`, `nvme_queue_rq`),
+   kernel struct/macro names (`memory.high`, `GFP_NOFS`), exact error
+   strings from dmesg (`page allocation failure`, `Out of memory`,
+   `soft lockup`, `RCU stall`).
+4. EXPAND with kernel-developer synonyms even if user didn't use them:
+   - "OOM in cgroup"     → also `memcontrol`, `oom_kill_process`, `mem_cgroup_out_of_memory`
+   - "soft lockup"       → also `watchdog`, `softlockup`, `sched_clock_stable`
+   - "I/O hang"          → also `blk_mq_get_tag`, `request_queue`, `hung_task`
+   - "use-after-free"    → also `KASAN`, the exact function from the trace
+   - "page fragmentation"→ also `compaction`, `__alloc_pages_slowpath`, `order:N`
+
+CRITICAL — fewer is better. BM25 OR-joins ALL keywords; adding generic
+terms (`OOM`, `memory`, `cgroup`) dilutes specific matches with noise.
+Generate at most 4-6 of the MOST DISCRIMINATING keywords — terms a
+specific bugfix commit subject would use, not generic subsystem words.
+
+Always supply EMPTY arrays `[]` (never null) for unused list fields.
+
+Return ONLY valid JSON:
 {{
-  "keywords": ["<relevant kernel terms>"],
+  "keywords": ["<4-6 most-discriminating kernel terms>"],
   "kernel_version": "<OLK-6.6 | OLK-5.10 | mainline | null>",
-  "subsystem": "<e.g. mm, net/tcp, fs/ext4, or null>",
-  "cve_ids": ["<CVE-YEAR-NNNNN>"],
-  "commit_hashes": ["<sha>"]
+  "subsystem": "<mm | net/tcp | fs/ext4 | block | sched | rcu | ... | null>",
+  "cve_ids": [],
+  "commit_hashes": []
 }}
+
+Examples (specificity over coverage):
+
+  Q: "v6.6 OLK: OOM kill of process 'java' with oom_score 800. cgroup
+      memory limit 4GB hit."
+  →
+  {{"keywords": ["memcontrol", "memory.high", "throttle", "vmscan flushers"],
+    "kernel_version": "OLK-6.6", "subsystem": "mm",
+    "cve_ids": [], "commit_hashes": []}}
+  (NOT: "OOM", "cgroup", "memory" — those match thousands of commits.
+   YES: "memcontrol", "memory.high", "throttle" — these are in fix commit
+        subjects for this class of bug.)
+
+  Q: "Soft lockup CPU#2 stuck 23s in kworker/2:1H. __schedule in trace."
+  →
+  {{"keywords": ["sched_ext breather", "softlockup BPF scheduler",
+                 "lseek trace soft lockup", "kworker schedule stuck"],
+    "kernel_version": null, "subsystem": "sched",
+    "cve_ids": [], "commit_hashes": []}}
 
 Question: {question}
 """
@@ -75,13 +119,15 @@ def _llm_parse(raw_question: str) -> RetrievalQuery:
     content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip())
     data = json.loads(content)
 
+    # `data.get(k, [])` returns the default only when key MISSING; if LLM
+    # returns null/None for a list field, Pydantic rejects it. Coerce.
     return RetrievalQuery(
         raw_question=raw_question,
-        keywords=data.get("keywords", []),
+        keywords=data.get("keywords") or [],
         kernel_version=data.get("kernel_version"),
         subsystem=data.get("subsystem"),
-        cve_ids=data.get("cve_ids", []),
-        commit_hashes=data.get("commit_hashes", []),
+        cve_ids=data.get("cve_ids") or [],
+        commit_hashes=data.get("commit_hashes") or [],
     )
 
 

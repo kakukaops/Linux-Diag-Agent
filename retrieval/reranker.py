@@ -84,8 +84,13 @@ def _llm_rerank(query: RetrievalQuery, items: list[Evidence]) -> list[Evidence]:
     m = re.search(r"\[[\d,\s]+\]", raw)
     scores: list[int] = json.loads(m.group(0) if m else raw)
 
-    if len(scores) != len(candidates):
-        raise ValueError(f"Score length mismatch: {len(scores)} vs {len(candidates)}")
+    # LLM occasionally returns 1 extra/missing score (especially when stream
+    # consumer trims). Reconcile length non-fatally: truncate or pad with 0
+    # (worst score → those candidates demote, don't crash the whole rerank).
+    if len(scores) > len(candidates):
+        scores = scores[:len(candidates)]
+    elif len(scores) < len(candidates):
+        scores = scores + [0] * (len(candidates) - len(scores))
 
     ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
     return [item for _, item in ranked[:RERANK_TOP_K]]

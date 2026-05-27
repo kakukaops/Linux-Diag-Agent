@@ -201,7 +201,7 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
         "react_tools_used": list({t.get("tool") for t in tool_trace}),
         # Evidence quality
         "evidence_count": len(evidence),
-        "recall_at_10": round(recall, 3),
+        "recall_at_10": round(recall, 3) if recall is not None else None,
         "traceability": round(traceability, 3),
         # v2.1: claim grounding
         "groundedness": groundedness,
@@ -219,13 +219,19 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
     }
 
 
-def _compute_recall(evidence: list[dict], case: dict) -> float:
-    """Recall@10 with short-SHA prefix matching (fixes 0.0 recall from exact-hash mismatch)."""
+def _compute_recall(evidence: list[dict], case: dict) -> float | None:
+    """Recall@10 with short-SHA prefix matching (fixes 0.0 recall from exact-hash mismatch).
+
+    Returns None when the case has no ground-truth commits/bugs — we used to
+    return 1.0 ("unconstrained pass"), which silently inflated the headline
+    recall by averaging over un-scorable cases. None excludes the case from
+    the recall aggregate cleanly.
+    """
     expected_commits = set(case.get("expected_commit_hashes", []))
     expected_bugs = set(str(b) for b in case.get("expected_bug_ids", []))
 
     if not expected_commits and not expected_bugs:
-        return 1.0  # no ground truth → unconstrained, treat as pass
+        return None    # no ground truth → exclude from recall aggregate
 
     found_commits = set()
     found_bugs = set()
@@ -475,10 +481,12 @@ def _compute_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         if diag_with_claims else None
     )
 
+    recall_scored = [r for r in ok if r.get("recall_at_10") is not None]
     return {
         "total": n,
         "errors": len(errors),
         "avg_recall_at_10": avg("recall_at_10"),
+        "recall_scored_n": len(recall_scored),
         "avg_traceability": avg("traceability"),
         "avg_elapsed_ms": avg("elapsed_ms"),
         "avg_react_iterations": avg("react_iterations"),
@@ -506,10 +514,13 @@ def _per_category(results: list[dict]) -> dict[str, Any]:
         cats.setdefault(c, []).append(r)
     out = {}
     for cat, items in cats.items():
+        scored = [r for r in items if r.get("recall_at_10") is not None]
         out[cat] = {
             "count": len(items),
-            "avg_recall": round(
-                sum(r.get("recall_at_10", 0) for r in items) / len(items), 3
+            "recall_scored_n": len(scored),
+            "avg_recall": (
+                round(sum(r["recall_at_10"] for r in scored) / len(scored), 3)
+                if scored else None
             ),
             "route_correct_pct": round(
                 sum(1 for r in items if r.get("route_correct")) / len(items), 3
@@ -522,7 +533,8 @@ def _print_case_result(r: dict) -> None:
     status = r.get("react_verdict") or ("ERROR" if r.get("error") else "?")
     route = r.get("diagnostic_route") or "?"
     route_ok = "✓" if r.get("route_correct") else ("?" if r.get("route_correct") is None else "✗")
-    recall = r.get("recall_at_10", 0)
+    recall_raw = r.get("recall_at_10")
+    recall_str = f"{recall_raw:.0%}" if recall_raw is not None else "n/a"
     judge = r.get("root_cause_correct")
     judge_str = ("✓" if judge else "✗") if judge is not None else "-"
     gnd = r.get("groundedness") or "-"
@@ -531,7 +543,7 @@ def _print_case_result(r: dict) -> None:
     vcr_str = f"{vcr:.0%}" if vcr is not None else "-"
     print(
         f"  [{r['case_id']:<20}] {status:<22} route={route:<14}{route_ok} "
-        f"recall={recall:.0%} judge={judge_str} gnd={gnd_str} vcr={vcr_str:>5} "
+        f"recall={recall_str:>4} judge={judge_str} gnd={gnd_str} vcr={vcr_str:>5} "
         f"iter={r.get('react_iterations',0)} tok={r.get('react_tokens_used',0):,}"
     )
 
@@ -539,7 +551,12 @@ def _print_case_result(r: dict) -> None:
 def _print_summary(s: dict) -> None:
     print(f"\n{'='*70}")
     print(f"v2 Eval Summary  ({s['total']} cases, {s.get('errors',0)} errors)")
-    print(f"  Recall@10:           {s.get('avg_recall_at_10', 0):.1%}")
+    scored_n = s.get("recall_scored_n", 0)
+    if scored_n:
+        print(f"  Recall@10:           {s.get('avg_recall_at_10', 0):.1%}  "
+              f"(over {scored_n} cases with ground-truth)")
+    else:
+        print(f"  Recall@10:           n/a (no cases with ground truth)")
     print(f"  Traceability:        {s.get('avg_traceability', 0):.1%}")
     print(f"  Route accuracy:      {s['route_accuracy']:.1%}" if s.get('route_accuracy') is not None else "  Route accuracy:      n/a")
     print(f"  Fault-kind acc:      {s['fault_kind_accuracy']:.1%}" if s.get('fault_kind_accuracy') is not None else "  Fault-kind acc:      n/a")
@@ -563,7 +580,10 @@ def _print_summary(s: dict) -> None:
     if cats:
         print(f"  Per category:")
         for cat, data in cats.items():
-            print(f"    {cat:<16} n={data['count']} recall={data['avg_recall']:.0%} route={data['route_correct_pct']:.0%}")
+            rec = data.get("avg_recall")
+            rec_str = (f"recall={rec:.0%} (n={data['recall_scored_n']})"
+                       if rec is not None else "recall=n/a")
+            print(f"    {cat:<16} n={data['count']} {rec_str} route={data['route_correct_pct']:.0%}")
     print(f"{'='*70}\n")
 
 

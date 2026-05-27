@@ -59,7 +59,10 @@
       "72a5671b9ab39e5f923354d1f55e92367cc4f3f3",
       "ad83e90584844f87f3a1b78b60ea5c23ac13fe6d"
     ],
-    "expected_bug_ids": [217, 1467],
+    "expected_bug_ids": [
+      217,
+      1467
+    ],
     "ground_truth_root_cause": "kworker soft lockup in __schedule indicates a high-priority work item blocking the scheduler. Could be filesystem writeback (kworker/2:1H = high-priority), disk I/O hang, or scheduler starvation under heavy I/O load.",
     "notes": "Scheduler soft lockup — kworker blocked in __schedule"
   },
@@ -72,7 +75,9 @@
     "raw_input": "[98765.432100] INFO: task mysqld:1234 blocked for more than 120 seconds.\n[98765.432105]       Not tainted 6.6.0-28.0.0.34.oe2403.x86_64 #1\n[98765.432110] \"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\" disables this message.\n[98765.432115] task:mysqld          state:D stack:    0 pid: 1234 ppid:  1 flags:0x00004002\n[98765.432120] Call Trace:\n[98765.432125]  <TASK>\n[98765.432130]  __schedule+0x35a/0x930\n[98765.432135]  schedule+0x5c/0xd0\n[98765.432140]  io_schedule+0x42/0x70\n[98765.432145]  __folio_wait_bit+0xa0/0x190\n[98765.432150]  filemap_wait_on_page_writeback+0x52/0x80\n[98765.432155]  ext4_writepages+0x6e3/0xe10",
     "question": "OLK-6.6: mysqld hung for 120s in D state. Call trace: io_schedule -> filemap_wait_on_page_writeback -> ext4_writepages. Disk not full. How to diagnose?",
     "expected_commit_hashes": [],
-    "expected_bug_ids": [1467],
+    "expected_bug_ids": [
+      1467
+    ],
     "ground_truth_root_cause": "mysqld blocked in D state waiting on ext4 writeback I/O. Likely cause: disk/storage I/O hang (SAN timeout, disk failure, storage controller lockup), or ext4 journal flush blocking. Check storage path.",
     "notes": "Hung task in ext4 writeback — I/O hang, not scheduler bug"
   },
@@ -100,10 +105,14 @@
     "expected_fault_kind": "oops",
     "raw_input": "[  567.891234] BUG: KASAN: slab-out-of-bounds in kmalloc_trace+0x123/0x200\n[  567.891240] Write of size 1 at addr ffff888200001000 by task nginx/5678\n[  567.891245] CPU: 4 PID: 5678 Comm: nginx Not tainted 6.6.0-28.0.0.34.oe2403.x86_64 #1\n[  567.891250] Call Trace:\n[  567.891255]  <TASK>\n[  567.891260]  kmalloc_trace+0x123/0x200\n[  567.891265]  skb_put+0x4a/0x90\n[  567.891270]  tcp_send_mss+0x12a/0x1f0\n[  567.891275]  tcp_sendmsg_locked+0x6b3/0xf30\n[  567.891280]  tcp_sendmsg+0x29/0x40\n[  567.891285]  sock_sendmsg+0x63/0x70\n[  567.891290] Allocated by task 5678:\n[  567.891295]  kmalloc_trace+0x67/0x200\n[  567.891300]  sk_stream_alloc_skb+0x12f/0x1f0",
     "question": "OLK-6.6: KASAN slab-out-of-bounds write in skb_put -> tcp_send_mss. nginx process. Write of size 1 beyond skb allocation.",
-    "expected_commit_hashes": [],
+    "expected_commit_hashes": [
+      "9ab5cf19fb0e4680f95e506d6c544259bf1111c4",
+      "8615d2e1fb7dc6570b463d893aad1cfd82e65329",
+      "ad04a1fad56a6160208610a136994c683e575f27"
+    ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "SKB tail overflow: tcp_send_mss computed MSS incorrectly causing skb_put to write 1 byte beyond the allocated skb. Likely triggered by non-standard MTU or GRO/TSO configuration interaction.",
-    "notes": "SKB out-of-bounds — TCP MSS calculation bug"
+    "notes": "SKB out-of-bounds — TCP MSS calculation bug | GT: net: fix crash when config small gso_max_size (Wang Liang, 2024-10-23; mainline 9ab5cf19fb0e)"
   },
   {
     "id": "panic-001",
@@ -117,7 +126,9 @@
       "79b4e61657c682ac2809a670aea153d95b2e4e24",
       "dba19fb8c8265bd66b689403c62ba87e74382425"
     ],
-    "expected_bug_ids": [1291],
+    "expected_bug_ids": [
+      1291
+    ],
     "ground_truth_root_cause": "Boot-time panic: VFS cannot find root block device (254,0 = dm-0, typically LVM). Root cause: missing dm/LVM driver in initramfs, or UUID/label mismatch in grub/dracut config after kernel update.",
     "notes": "Boot failure: missing root device in initramfs"
   },
@@ -132,7 +143,8 @@
     "expected_commit_hashes": [],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "NULL pointer dereference in ext4 writeback: ext4_writepages accesses a field at offset 0x68 of a NULL pointer — likely a freed/invalid inode or superblock pointer. Possibly triggered by concurrent unmount or disk error.",
-    "notes": "ext4 writeback NULL deref — possible use-after-free in inode lifecycle"
+    "notes": "ext4 writeback NULL deref — possible use-after-free in inode lifecycle | no specific upstream fix (symptom class / open bug)",
+    "no_commit_expected": true
   },
   {
     "id": "hardware-001",
@@ -145,7 +157,8 @@
     "expected_commit_hashes": [],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Hardware memory error: MCE on Bank 5 (Memory Controller) with EDAC corrected error on DIMM slot CPU_SrcID#0_Ha#0_Chan#0_DIMM#0. CE → CE trend likely becoming UE. Recommend: monitor CE rate, schedule DIMM replacement if CE count is increasing.",
-    "notes": "MCE + EDAC corrected error — hardware route required, NOT kernel commit search"
+    "notes": "MCE + EDAC corrected error — hardware route required, NOT kernel commit search",
+    "no_commit_expected": true
   },
   {
     "id": "hardware-002",
@@ -158,7 +171,8 @@
     "expected_commit_hashes": [],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Fatal MCE caused by EDAC Uncorrected Error (UE) on DIMM Chan#1_DIMM#1. UE = multi-bit ECC failure that ECC cannot correct → hardware-level data corruption → mandatory panic. Action: replace DIMM Chan#1_DIMM#1 immediately.",
-    "notes": "Fatal MCE + EDAC UE — definitive hardware failure (DIMM replacement required)"
+    "notes": "Fatal MCE + EDAC UE — definitive hardware failure (DIMM replacement required)",
+    "no_commit_expected": true
   },
   {
     "id": "rcu-001",
@@ -171,7 +185,8 @@
     "expected_commit_hashes": [],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "RCU stall on CPU 0 — CPU is not passing through quiescent states for 5251 ticks (~52s). Root cause: long-running interrupt handler, disabled preemption in softirq, or BPF program consuming CPU without yielding.",
-    "notes": "RCU sched stall — CPU preemption disabled or long interrupt"
+    "notes": "RCU sched stall — CPU preemption disabled or long interrupt | no specific upstream fix (symptom class / open bug)",
+    "no_commit_expected": true
   },
   {
     "id": "lockdep-001",
@@ -184,7 +199,8 @@
     "expected_commit_hashes": [],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Circular lock dependency: jbd2 journal handle held while acquiring inode mutex in ext4_evict_inode. Lockdep detects potential deadlock between journal and eviction paths. Likely triggered by a concurrent truncate or unlink under journal pressure.",
-    "notes": "ext4 lockdep: jbd2 handle vs i_mutex ordering"
+    "notes": "ext4 lockdep: jbd2 handle vs i_mutex ordering | no specific upstream fix (symptom class / open bug)",
+    "no_commit_expected": true
   },
   {
     "id": "change-001",
@@ -197,7 +213,8 @@
     "expected_commit_hashes": [],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Kernel regression: TCP behavior changed between 6.6.0-20 and 6.6.0-28. Possible causes: net/tcp socket option handling change, conntrack module behavior change, or TCP early RST on SYN backlog exhaustion. Check kernel changelog between versions.",
-    "notes": "Change route: regression after kernel upgrade — should search commit changelog"
+    "notes": "Change route: regression after kernel upgrade — should search commit changelog",
+    "no_commit_expected": true
   },
   {
     "id": "io-hang-001",
@@ -210,6 +227,7 @@
     "expected_commit_hashes": [],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "NVMe controller I/O timeout causing block queue stall: blk_mq_get_tag blocked waiting for request tags because NVMe queue is full (controller not draining). Root cause: NVMe controller firmware issue, PCIe link instability, or high queue depth under sustained write load.",
-    "notes": "NVMe I/O hang — blk-mq tag exhaustion after controller timeout"
+    "notes": "NVMe I/O hang — blk-mq tag exhaustion after controller timeout",
+    "no_commit_expected": true
   }
 ]

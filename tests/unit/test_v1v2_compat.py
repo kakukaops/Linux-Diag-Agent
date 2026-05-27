@@ -176,6 +176,41 @@ def test_bind_claims_calls_llm_on_diagnosed():
     assert len(result["speculative_claims"]) == 0
 
 
+def test_bind_claims_auto_attaches_matching_evidence():
+    """v2.2 Path C: when LLM cites an UNRELATED ref but the pool DOES
+    contain a relevant one, auto-attach rescues the claim.
+
+    Real scenario: agent's analysis correctly diagnoses the issue but
+    cites the wrong commit. Auto-attach should find the right one in
+    the retrieved evidence pool by keyword overlap.
+    """
+    from agent.diagnosis.nodes import bind_claims
+    state = {
+        "react_verdict": "diagnosed",
+        "final_analysis": "Memory cgroup OOM kill due to memcontrol throttle of dying tasks.",
+        "evidence": [
+            # Unrelated commit that the LLM might cite by mistake
+            {"commit_hash": "abc1234", "title": "btrfs: nodesize cleanup",
+             "body": "Refactor nodesize.", "bug_id": None},
+            # The actual matching commit, present in pool but NOT cited by LLM
+            {"commit_hash": "892962a", "title": "memcontrol: don't throttle dying tasks",
+             "body": "Fix memcg throttle of dying tasks on memory.high causing OOM kill.",
+             "bug_id": None},
+        ],
+    }
+    # LLM cites the WRONG commit
+    mock_response = ('[{"text": "OOM caused by memcontrol throttling dying tasks", '
+                     '"evidence_refs": ["abc1234"]}]')
+    with patch("agent.diagnosis.nodes._llm_call", return_value=mock_response):
+        result = bind_claims(state)
+
+    # Should auto-attach 892962a and verify
+    assert result["claims"][0]["verified"] is True, \
+        "auto-attach should rescue: claim overlaps with 892962a even though LLM cited abc1234"
+    assert result["groundedness"] == "grounded"
+    assert any("AUTO:" in str(r) for r in result["claims"][0]["evidence_refs"])
+
+
 def test_bind_claims_rejects_unrelated_evidence():
     """v2.1 P0-2: LLM citing a real-but-unrelated commit must NOT be verified.
 

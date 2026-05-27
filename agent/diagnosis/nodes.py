@@ -231,11 +231,29 @@ def bind_claims(state: dict) -> dict:
         e["message_id"]: e for e in evidence if e.get("message_id")
     }
 
+    # v2.2 Path C: show the LLM what evidence is ACTUALLY in the retrieved
+    # pool, so it can cite real IDs (not invent from training memory).
+    # Truncate per-row text to keep prompt tractable.
+    evidence_lines: list[str] = []
+    for i, ev in enumerate(evidence[:30]):  # top 30 evidence rows
+        rid = (ev.get("commit_hash") or
+               (f"bug#{ev['bug_id']}" if ev.get("bug_id") else None) or
+               ev.get("message_id") or
+               ev.get("cve_id") or
+               f"item{i}")
+        title = (ev.get("title") or "")[:80]
+        evidence_lines.append(f"  - {rid}: {title}")
+    evidence_block = "\n".join(evidence_lines) if evidence_lines else "  (no evidence retrieved)"
+
     prompt = (
         f"Analysis: {analysis}\n\n"
-        "Extract factual claims and cite supporting evidence. "
-        "Return JSON array: "
-        '[{"text":"claim text","evidence_refs":["commit_hash or bug_id or message_id"]}]'
+        f"Retrieved evidence pool (cite ONLY from this list):\n{evidence_block}\n\n"
+        "Extract factual claims from the Analysis and cite the SINGLE most-supporting "
+        "evidence ID for each. Each claim's evidence_refs must contain IDs that appear "
+        "above. If a claim has no matching evidence in the pool, set evidence_refs to []. "
+        "Do NOT invent commit hashes or bug IDs.\n\n"
+        "Return JSON array only: "
+        '[{"text":"claim text","evidence_refs":["id-from-pool"]}]'
     )
     raw = _llm_call(prompt)
     try:
@@ -267,6 +285,34 @@ def bind_claims(state: dict) -> dict:
                                     for ev in cited_evidence)
         else:
             evidence_strength = 0.0
+
+        # (c) v2.2 Path C — auto-attach rescue.
+        # If LLM-provided refs don't pass the overlap check, scan the FULL
+        # retrieved evidence pool for a strong-overlap match and attach it.
+        # Handles two LLM failure modes:
+        #   (i)  cited unrelated commits (claim is right but wrong ref)
+        #   (ii) forgot to cite any evidence at all
+        # The auto-attached ref must clear the SAME 0.20 threshold — we're
+        # not lowering the bar, just letting the agent find the right
+        # supporting evidence after the fact.
+        if evidence_strength < _OVERLAP_THRESHOLD:
+            best_ev = None
+            best_overlap = 0.0
+            for ev in evidence:
+                ov = _claim_evidence_overlap(text, ev)
+                if ov > best_overlap:
+                    best_overlap = ov
+                    best_ev = ev
+            if best_ev and best_overlap >= _OVERLAP_THRESHOLD:
+                # Take whichever ID this evidence carries
+                auto_ref = (best_ev.get("commit_hash")
+                            or (str(best_ev["bug_id"]) if best_ev.get("bug_id") else None)
+                            or best_ev.get("message_id")
+                            or best_ev.get("cve_id"))
+                if auto_ref:
+                    cited_evidence.append(best_ev)
+                    evidence_strength = best_overlap
+                    refs = list(refs) + [f"AUTO:{auto_ref}"]
 
         verified = bool(cited_evidence) and evidence_strength >= _OVERLAP_THRESHOLD
         claim: Claim = {

@@ -135,16 +135,25 @@ def test_loop_repeated_identical_call_exits_max_iter():
 
 
 def test_loop_exits_on_token_budget():
-    """Accumulated token usage over TOKEN_BUDGET → budget_exhausted (ADR-019 D3)."""
+    """Accumulated token usage over TOKEN_BUDGET → budget_exhausted (ADR-019 D3).
+
+    Per-step tokens calibrated to TOKEN_BUDGET so the test is robust to the
+    constant changing (50K → 150K → 200K across v2 evolution).
+    """
+    from agent.react.loop import TOKEN_BUDGET
+    # Per-step ~60 % of budget → step 2 crosses TOKEN_BUDGET (avoids tripping
+    # REPEAT_LIMIT=3 with same-tool-call provider).
+    per_step = int(TOKEN_BUDGET * 0.6)
     big = ChatResponse(content="", finish_reason="tool_calls",
                        tool_calls=[_tool_call("get_meminfo")],
-                       usage=Usage(input_tokens=30_000, output_tokens=5_000))
-    provider = FakeProvider(big, big, big, big)   # 35K tokens per step
+                       usage=Usage(input_tokens=per_step - 5_000,
+                                   output_tokens=5_000))
+    provider = FakeProvider(*[big] * 10)
     result = run_react_loop(provider=provider, registry=_registry(), route="kernel",
                             system_prompt="s", user_prompt="u", max_iter=10)
     assert result.verdict == "budget_exhausted"
-    assert result.iterations == 2                 # 70K > 50K budget after step 2
-    assert result.tokens_used >= 50_000
+    assert result.iterations == 2
+    assert result.tokens_used >= TOKEN_BUDGET
 
 
 # ── registry route subsetting (ADR-023) ─────────────────────────────────────

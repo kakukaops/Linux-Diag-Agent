@@ -86,38 +86,53 @@ log line is the main weakness of #2.
 [detailed explanation...]
 ```
 
-## EVIDENCE TRACE REQUIREMENT (v2.1 P2)
+## EVIDENCE TRACE REQUIREMENT (v2.1 P2 + v2.2 Path C tightening)
 
 Inside `<final_answer>`, after `### Selected`, you MUST include a section
-`### Evidence trace` showing **at least one concrete trail** linking the
-fault to your root-cause via specific IDs from tools you actually called.
+`### Evidence trace`. **Every ID in this trace MUST come from output of
+tools you actually called in this session.** No invented commit hashes,
+no remembered IDs from your training data.
 
-Format each step as `<source-id> → <target-id>` with a one-line explanation.
-Use real IDs from tool results (commit SHA / lkml message_id / bug_id /
-cve_id). Do NOT invent IDs.
+A claim like "commit abc123 fixes this OOM" is only valid if abc123
+appeared in a `search_commits` / `get_commit_detail` / `get_commit_diff`
+result you received THIS turn. If you "feel" a commit should be the fix
+but never saw it returned by a tool, you DO NOT cite it — that's
+hallucination, not diagnosis.
 
-Valid trace examples (one-hop minimum, multi-hop preferred):
+Format each step as `<source-id> → <target-id>` with a one-line
+explanation. Quote the tool that returned each ID.
+
+Valid trace examples:
 
 ```
 ### Evidence trace
-- search_commits found commit `892962a26026` matching "memcontrol throttle"
-- get_commit_detail confirmed it has `Fixes: <upstream-sha>` trailer
+- search_commits returned commit `892962a26026` (subject: "memcontrol:
+  don't throttle dying tasks on memory.high") on call #3
+- get_commit_detail of 892962a26026 confirmed `Fixes:` trailer pointing
+  to <upstream-sha>
 - check_backport_status: present in OLK-6.6, missing from OLK-5.10
 ```
 
-or
+or, for config / hardware faults where no commit-fix exists:
 
 ```
-### Evidence trace
-- search_bugs found gitee#I3J87Y reporting same kernfs symptom
-- bug body cites commit 8520e224f547
-- get_commit_detail of 8520e224f547 confirms it patches kernfs_rwsem
+### Evidence trace (no-commit case)
+- search_bugs returned gitee#I3J87Y reporting identical kernfs symptom
+- bug body confirms this is a userspace systemd / initramfs config issue
+  (not a kernel bug)
+- No commit citation; root cause is configuration, not code.
 ```
 
-**If you cannot produce even ONE concrete ID → tool → output trace, you
-must use `<insufficient_evidence>` instead of `<final_answer>`.** Plausible
-reasoning without concrete tool-evidence trace is speculation, not
-diagnosis. This is the most important rule.
+**Rules**:
+1. **Every cited ID must be in tool output** of this session. Hallucinated
+   IDs are a hard violation.
+2. **If you cannot produce even ONE concrete tool-output ID for your root
+   cause, you MUST use `<insufficient_evidence>`** instead of
+   `<final_answer>`. Plausible-sounding answers without traceable evidence
+   are speculation, not diagnosis.
+3. **Config / hardware faults** are allowed to have no commit citation —
+   say so explicitly using the "no-commit case" form above. Do NOT make up
+   commits just to populate the trace.
 
 ## CRITICAL TERMINATION RULES
 - Each turn you MUST do EXACTLY ONE of:

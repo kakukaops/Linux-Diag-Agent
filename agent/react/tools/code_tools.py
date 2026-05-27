@@ -118,6 +118,69 @@ def _get_function_source(*, func_name: str, kernel_version: str | None = None,
     return "\n".join(parts)
 
 
+def _expand_query_from_symbol(*, symbol: str,
+                              kernel_version: str | None = None,
+                              **_: object) -> str:
+    """Pull candidate fix-side keywords out of a function's source.
+
+    Used when BM25 with the crash-site symbol returns nothing useful — the
+    fix commit typically touches a related symbol (struct field, callee,
+    upstream variable) that doesn't appear in the dmesg trace. This tool
+    reads the source via CodeGraph and extracts the identifiers most likely
+    to be in the fix commit body.
+
+    Returns a newline-separated list "<token>: <count>  -- <hint>".
+    """
+    import re
+    from collections import Counter
+    from clients.codegraph.client import get_codegraph_client, CodeGraphError
+
+    try:
+        client = get_codegraph_client()
+        # Use lookup_symbol — SCIP-precision definition lookup. Falls back
+        # to search_code if the symbol isn't indexed.
+        repo = client.resolve_repo(kernel_version)
+        args: dict = {"symbol": symbol, "action": "definition"}
+        if repo:
+            args["repos"] = [repo]
+        result = client.passthrough("lookup_symbol", args)
+        from clients.codegraph.client import _get_text_content
+        sources = _get_text_content(result) or ""
+        if not sources.strip():
+            hits = client.search_code(symbol, version_hint=kernel_version, limit=3)
+            sources = " ".join((h.get("snippet") or "")[:4000] for h in hits)
+    except CodeGraphError as exc:
+        return f"CodeGraph unavailable: {exc}"
+    if not sources.strip():
+        return f"No source returned for {symbol!r}."
+
+    # Kernel identifiers: snake_case (≥2 chars, has '_') or ALL_CAPS macros.
+    snake = re.findall(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", sources)
+    caps  = re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", sources)
+
+    # Drop the symbol itself plus C / kernel stopwords that BM25 won't help on.
+    stop = {symbol, "if", "else", "for", "while", "return", "goto",
+            "struct", "static", "const", "void", "char", "int", "long",
+            "u8", "u16", "u32", "u64", "size_t", "bool", "true", "false",
+            "null", "unlikely", "likely", "WARN", "BUG", "EXPORT_SYMBOL",
+            "GFP_KERNEL", "GFP_ATOMIC", "EINVAL", "ENOMEM", "EFAULT",
+            "READ_ONCE", "WRITE_ONCE", "BUILD_BUG_ON",
+            # MCP / response-metadata leakage
+            "SCIP", "scip", "Zoekt", "zoekt"}
+    toks = [t for t in snake + caps if t not in stop and len(t) > 3]
+    counts = Counter(toks).most_common(20)
+
+    if not counts:
+        return f"No expandable identifiers extracted from {symbol!r}."
+
+    lines = [f"Candidate keywords from {symbol} source "
+             "(feed top items into search_commits / search_lkml):"]
+    for tok, n in counts:
+        kind = "macro" if tok.isupper() else "ident"
+        lines.append(f"  {tok}  ({n}×, {kind})")
+    return "\n".join(lines)
+
+
 def _get_call_graph(*, func_name: str,
                     direction: str = "callers",
                     kernel_version: str | None = None,
@@ -325,8 +388,33 @@ GET_DEVICE_MAJOR_MAPPING = Tool(
     fn=_get_device_major_mapping,
 )
 
+EXPAND_QUERY_FROM_SYMBOL = Tool(
+    name="expand_query_from_symbol",
+    description=(
+        "When BM25 search using a crashing-site symbol returns nothing "
+        "relevant, call this to extract candidate fix-side keywords from "
+        "that function's source. Returns struct fields, callees, and "
+        "ALL_CAPS macros — the vocabulary that's likely in the actual "
+        "fix commit body. Example: symbol='tcp_send_mss' may surface "
+        "'sk_gso_max_size', 'tcp_mss_split_point', 'tcp_skb_pcount' — "
+        "feed those into search_commits next."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string",
+                       "description": "Kernel function symbol from the crash trace"},
+            "kernel_version": {"type": "string",
+                               "description": "OLK-6.6 or OLK-5.10"},
+        },
+        "required": ["symbol"],
+    },
+    fn=_expand_query_from_symbol,
+    routes=_K,
+)
+
 ALL_CODE_TOOLS = [
     GET_COMMIT_DETAIL, GET_COMMIT_DIFF, CHECK_BACKPORT_STATUS,
     GET_REGRESSION_FIXES, GET_FUNCTION_SOURCE, GET_CALL_GRAPH,
-    GET_DEVICE_MAJOR_MAPPING,
+    EXPAND_QUERY_FROM_SYMBOL, GET_DEVICE_MAJOR_MAPPING,
 ]

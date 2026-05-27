@@ -222,16 +222,20 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
 def _compute_recall(evidence: list[dict], case: dict) -> float | None:
     """Recall@10 with short-SHA prefix matching (fixes 0.0 recall from exact-hash mismatch).
 
-    Returns None when the case has no ground-truth commits/bugs — we used to
-    return 1.0 ("unconstrained pass"), which silently inflated the headline
-    recall by averaging over un-scorable cases. None excludes the case from
-    the recall aggregate cleanly.
+    Returns None when the case has no ground-truth commits/bugs — either
+    because the case is `no_commit_expected: True` by design (hardware /
+    config / regression cases) or because ground truth has not yet been
+    researched. Both are excluded from the recall aggregate so we don't
+    inflate the headline (which is what the old `return 1.0` did).
     """
+    if case.get("no_commit_expected"):
+        return None    # by design: not a commit-citable case
+
     expected_commits = set(case.get("expected_commit_hashes", []))
     expected_bugs = set(str(b) for b in case.get("expected_bug_ids", []))
 
     if not expected_commits and not expected_bugs:
-        return None    # no ground truth → exclude from recall aggregate
+        return None    # no ground truth yet (needs research)
 
     found_commits = set()
     found_bugs = set()

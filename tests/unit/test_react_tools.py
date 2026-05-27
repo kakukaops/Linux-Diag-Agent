@@ -22,7 +22,8 @@ def test_build_registry_has_all_categories():
             "search_cve", "search_code", "lookup_symbol"} <= names
     # Category D
     assert {"get_commit_detail", "get_commit_diff", "check_backport_status",
-            "get_regression_fixes", "get_function_source", "get_call_graph"} <= names
+            "get_regression_fixes", "get_function_source", "get_call_graph",
+            "expand_query_from_symbol"} <= names
     # Category B
     assert {"parse_dmesg", "parse_sosreport", "extract_call_trace"} <= names
 
@@ -112,6 +113,51 @@ def test_search_code_codegraph_unavailable():
         mock_get.return_value.search_code.side_effect = CodeGraphError("timeout")
         result = _search_code(query="oom_kill_process")
     assert "unavailable" in result.lower()
+
+
+def test_expand_query_from_symbol_extracts_neighbors():
+    """tcp_send_mss's body cites mss_now / size_goal / tcp_current_mss — those
+    are the candidates the LLM should retry BM25 with when the symptom symbol
+    itself returns nothing."""
+    from agent.react.tools.code_tools import _expand_query_from_symbol
+    fake_source = """
+        unsigned int tcp_send_mss(struct sock *sk, int *size_goal, int flags) {
+            int mss_now = tcp_current_mss(sk);
+            *size_goal = tcp_xmit_size_goal(sk, mss_now, !(flags & MSG_OOB));
+            return mss_now;
+        }
+    """
+    with patch("clients.codegraph.client.get_codegraph_client") as mock_get:
+        client = mock_get.return_value
+        client.resolve_repo.return_value = "olk-kernel"
+        client.passthrough.return_value = {
+            "content": [{"type": "text", "text": fake_source}]
+        }
+        result = _expand_query_from_symbol(symbol="tcp_send_mss",
+                                            kernel_version="OLK-6.6")
+    # Should surface neighbor identifiers, drop stopwords, drop the symbol itself
+    assert "mss_now" in result
+    assert "tcp_current_mss" in result
+    assert "tcp_xmit_size_goal" in result
+    assert "MSG_OOB" in result
+    assert "tcp_send_mss" not in result.split("from ")[1].split("source")[0] \
+           or result.count("tcp_send_mss") == 1  # only in header
+    # Should drop C keywords / common
+    assert "struct" not in result
+    assert "return" not in result.split("Candidate")[1]
+
+
+def test_expand_query_from_symbol_no_source():
+    """When CodeGraph returns no source, surface clear message instead of garbage."""
+    from agent.react.tools.code_tools import _expand_query_from_symbol
+    with patch("clients.codegraph.client.get_codegraph_client") as mock_get:
+        client = mock_get.return_value
+        client.resolve_repo.return_value = "olk-kernel"
+        client.passthrough.return_value = {"content": [{"type": "text", "text": ""}]}
+        client.search_code.return_value = []
+        result = _expand_query_from_symbol(symbol="nonexistent_xyz",
+                                            kernel_version="OLK-6.6")
+    assert "no source" in result.lower() or "not found" in result.lower()
 
 
 # ── log tools ─────────────────────────────────────────────────────────────────

@@ -23,7 +23,8 @@ def test_build_registry_has_all_categories():
     # Category D
     assert {"get_commit_detail", "get_commit_diff", "check_backport_status",
             "get_regression_fixes", "get_function_source", "get_call_graph",
-            "expand_query_from_symbol", "browse_subsystem_fixes"} <= names
+            "expand_query_from_symbol", "browse_subsystem_fixes",
+            "find_commits_touching_symbol"} <= names
     # Category B
     assert {"parse_dmesg", "parse_sosreport", "extract_call_trace"} <= names
 
@@ -180,6 +181,51 @@ def test_browse_subsystem_fixes_empty():
         result = _browse_subsystem_fixes(subsystem_prefixes="ext4",
                                           contains="nonexistent")
     assert "no fix commits" in result.lower()
+
+
+def test_find_commits_touching_symbol_formats_results():
+    """Reverse lookup against link_commit_symbol returns commits + subjects."""
+    from agent.react.tools.code_tools import _find_commits_touching_symbol
+    import datetime as _dt
+    class _Row:
+        def __init__(self, h, fp, k, subj, d, o):
+            self.commit_hash = h
+            self.file_path = fp
+            self.kind = k
+            self.subject = subj
+            self.commit_date = d
+            self.origin = o
+    fake_rows = [
+        _Row("9ab5cf19fb0e", "net/core/rtnetlink.c", "struct",
+             "net: fix crash when config small gso_max_size",
+             _dt.datetime(2024, 10, 23), "mainline"),
+        _Row("ad04a1fad56a", "net/core/rtnetlink.c", "struct",
+             "net: fix crash when config small gso_max_size",
+             _dt.datetime(2025, 7, 3), "olk"),
+    ]
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        conn = mock_eng.return_value.connect.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = fake_rows
+        result = _find_commits_touching_symbol(symbol="ifla_policy")
+    assert "ifla_policy" in result
+    assert "9ab5cf19fb0e" in result
+    assert "ad04a1fad56a" in result
+    assert "net/core/rtnetlink.c" in result
+
+
+def test_find_commits_touching_symbol_empty():
+    from agent.react.tools.code_tools import _find_commits_touching_symbol
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        conn = mock_eng.return_value.connect.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = []
+        result = _find_commits_touching_symbol(symbol="nonexistent_sym_xyz")
+    assert "no commits" in result.lower()
+
+
+def test_find_commits_touching_symbol_rejects_empty():
+    from agent.react.tools.code_tools import _find_commits_touching_symbol
+    assert "required" in _find_commits_touching_symbol(symbol="").lower()
+    assert "required" in _find_commits_touching_symbol(symbol="  ").lower()
 
 
 def test_browse_subsystem_fixes_rejects_empty_prefix():

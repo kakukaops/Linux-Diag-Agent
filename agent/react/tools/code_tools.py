@@ -181,6 +181,69 @@ def _expand_query_from_symbol(*, symbol: str,
     return "\n".join(lines)
 
 
+def _find_commits_touching_symbol(*, symbol: str,
+                                  kernel_version: str | None = None,
+                                  since_months: int = 36,
+                                  limit: int = 20,
+                                  **_: object) -> str:
+    """Reverse-lookup `link_commit_symbol`: which commits modified this symbol?
+
+    Closes the v2.3 symptom-symbol → fix-symbol gap. When the crash trace
+    names a function (e.g. `ext4_writepages`), this returns recent commits
+    that actually changed that function's source — a high-precision way to
+    surface candidate fixes that BM25 on commit bodies cannot find.
+    """
+    import datetime
+    from sqlalchemy import text
+    from storage.pg.engine import get_engine
+
+    sym = (symbol or "").strip()
+    if not sym:
+        return "error: symbol is required"
+    cutoff = datetime.date.today() - datetime.timedelta(days=since_months * 30)
+
+    version_clause = ""
+    params: dict = {"sym": sym, "cutoff": cutoff, "limit": min(max(limit, 5), 50)}
+    if kernel_version:
+        version_clause = " AND kc.affected_versions && ARRAY[:kv]::text[]"
+        params["kv"] = kernel_version
+
+    sql = f"""
+        SELECT DISTINCT ON (substring(lcs.commit_hash, 1, 12))
+               lcs.commit_hash, lcs.file_path, lcs.kind,
+               kc.subject, kc.commit_date, kc.origin
+          FROM link_commit_symbol lcs
+          JOIN kernel_commit kc ON kc.hash = lcs.commit_hash
+         WHERE lcs.symbol = :sym
+           AND kc.commit_date >= :cutoff
+           {version_clause}
+         ORDER BY substring(lcs.commit_hash, 1, 12), kc.commit_date DESC
+         LIMIT :limit
+    """
+    try:
+        with get_engine().connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+    except Exception as exc:
+        return f"DB error: {exc}"
+
+    if not rows:
+        kv_part = f" affecting {kernel_version}" if kernel_version else ""
+        return (f"No commits found touching symbol {sym!r}{kv_part} "
+                f"since {cutoff}. (Note: only ~0.5 % of OLK commits are "
+                f"indexed in v2.3 PoC; coverage will grow as the symbol "
+                f"backfill completes.)")
+
+    # Sort by date desc for display
+    rows = sorted(rows, key=lambda r: r.commit_date or datetime.date.min,
+                  reverse=True)
+    lines = [f"Commits touching symbol {sym!r} since {cutoff} (newest first):"]
+    for r in rows:
+        d = r.commit_date.date() if r.commit_date else "?"
+        lines.append(f"  {r.commit_hash[:12]} {d!s:<11} [{r.origin or '?':<8}] "
+                     f"({r.kind}@{r.file_path[:35]}) {(r.subject or '')[:80]}")
+    return "\n".join(lines)
+
+
 def _browse_subsystem_fixes(*, subsystem_prefixes: str,
                             contains: str | None = None,
                             since_months: int = 18,
@@ -524,9 +587,41 @@ BROWSE_SUBSYSTEM_FIXES = Tool(
     routes=_K,
 )
 
+FIND_COMMITS_TOUCHING_SYMBOL = Tool(
+    name="find_commits_touching_symbol",
+    description=(
+        "Reverse-lookup of the link_commit_symbol KG edge: given a C "
+        "symbol from the crash trace (function / struct / macro name), "
+        "return recent commits that actually modified that symbol's "
+        "source. Highest-precision way to find candidate fixes when the "
+        "crash-site symbol differs from the fix-side vocabulary — BM25 "
+        "on commit bodies can't bridge such gaps but this edge can. "
+        "Example: symbol='ext4_writepages' returns commits that changed "
+        "the function definition in fs/ext4/inode.c."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string",
+                       "description": "C symbol name (function/struct/macro) "
+                                      "from the crash trace or hypothesis"},
+            "kernel_version": {"type": "string",
+                               "description": "Filter to commits affecting "
+                                              "OLK-6.6 or OLK-5.10"},
+            "since_months": {"type": "integer", "default": 36,
+                             "description": "Lookback window (months)"},
+            "limit": {"type": "integer", "default": 20,
+                      "description": "Max results (5-50)"},
+        },
+        "required": ["symbol"],
+    },
+    fn=_find_commits_touching_symbol,
+    routes=_K,
+)
+
 ALL_CODE_TOOLS = [
     GET_COMMIT_DETAIL, GET_COMMIT_DIFF, CHECK_BACKPORT_STATUS,
     GET_REGRESSION_FIXES, GET_FUNCTION_SOURCE, GET_CALL_GRAPH,
     EXPAND_QUERY_FROM_SYMBOL, BROWSE_SUBSYSTEM_FIXES,
-    GET_DEVICE_MAJOR_MAPPING,
+    FIND_COMMITS_TOUCHING_SYMBOL, GET_DEVICE_MAJOR_MAPPING,
 ]

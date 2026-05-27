@@ -236,6 +236,51 @@ def backfill_batch(
     return (processed, rows_total, skipped)
 
 
+def run_backfill_loop(
+    repos: dict[str, str | Path],
+    batch_size: int = 500,
+    since_date: str | None = None,
+    max_batches: int | None = None,
+) -> dict:
+    """Run backfill_batch in a loop until no more candidates or max_batches.
+
+    Suitable for invocation from CLI as a long-running background job.
+    Logs progress every batch.
+    """
+    from storage.pg.engine import get_engine
+    import time
+
+    engine = get_engine()
+    totals = {"processed": 0, "rows": 0, "skipped": 0, "batches": 0}
+    t_start = time.time()
+
+    while True:
+        if max_batches is not None and totals["batches"] >= max_batches:
+            logger.info("max_batches reached; stopping")
+            break
+        t0 = time.time()
+        proc, rows, skip = backfill_batch(engine, repos,
+                                           limit=batch_size,
+                                           since_date=since_date)
+        if proc == 0 and skip == 0:
+            logger.info("no more candidates; backfill complete")
+            break
+        totals["processed"] += proc
+        totals["rows"] += rows
+        totals["skipped"] += skip
+        totals["batches"] += 1
+        dt = time.time() - t0
+        elapsed = time.time() - t_start
+        logger.info(
+            "batch %d: +%d commits, +%d rows, skipped %d (%.1fs) | "
+            "totals: %d commits, %d rows in %.0fs",
+            totals["batches"], proc, rows, skip, dt,
+            totals["processed"], totals["rows"], elapsed,
+        )
+
+    return totals
+
+
 def _iter_hashes_to_backfill(conn, limit: int) -> Iterable[str]:
     """Used by tests."""
     from sqlalchemy import text

@@ -22,29 +22,69 @@ _ROUTE_FILES: dict[str, str] = {
 
 _TERMINATION_FOOTER = """
 
-## HYPOTHESIS ENUMERATION (REQUIRED before final answer)
-Before writing `<final_answer>`, your `## Root Cause` section MUST start with
-**a numbered list of 2-4 candidate hypotheses** with confidence (0-1) and
-one-line justification each. Only after listing them do you pick the highest
-and explain in detail. Example:
+## HYPOTHESIS ENUMERATION + SELF-CRITIQUE (REQUIRED before final answer)
+
+Before writing `<final_answer>`, your `## Root Cause` section MUST contain
+three subsections in this order — `### Candidate hypotheses` → `### Critique`
+→ `### Selected`. **Skipping critique is a hard violation.**
+
+### Step 1 — `### Candidate hypotheses`
+Numbered list of **2-4** candidates. Each has:
+- confidence 0-1 calibrated honestly (see calibration rules below)
+- one-line justification with concrete evidence reference
+
+### Step 2 — `### Critique` (this is the new mandatory part)
+**Argue against your top candidate as if you were a reviewer.** For each of
+the next-highest 1-2 candidates, write one short paragraph: "Why might #N
+actually be correct instead of #1?" — citing real ambiguity in evidence.
+If you can't articulate a plausible argument against #1, that itself is a
+signal #1 may be over-fitted to surface evidence.
+
+### Step 3 — `### Selected: #N`
+After critique. Only NOW commit to one hypothesis OR escalate.
+
+### Confidence calibration rules (ENFORCED)
+- **If top confidence < 0.6 → you MUST use `<insufficient_evidence>` instead
+  of `<final_answer>`**. Tell the user what evidence would raise confidence.
+- 0.6-0.75 = "best of available candidates, but evidence is partial" — OK
+  to `<final_answer>` but flag the uncertainty in confidence line.
+- 0.75-0.9 = "evidence strongly supports this; weak counter-arguments exist".
+- 0.9+ = "essentially certain; counter-arguments are negligible". Reserve
+  this for cases with direct trailer / CVE / explicit `Fixes:` match.
+
+### Honest-confidence anti-patterns to AVOID
+- Don't write "confidence 0.95" just because you found ONE matching commit —
+  ask: would any OTHER commit / cause match the same symptoms?
+- Don't compress 2-3 alternatives to "all weak" without evidence; if you only
+  found one path, that's a single-hypothesis case → use lower confidence
+  + flag in critique.
+- Don't pick the most specific hypothesis when symptoms are general; broader
+  hypotheses with lower confidence are more honest than narrow guesses.
+
+### Example
 
 ```
 ## Root Cause
 
 ### Candidate hypotheses
 1. (confidence 0.7) memcg accounting race during reclaim — supported by
-   commit f9c645621a28 and matching call trace.
-2. (confidence 0.2) misconfigured cgroup limit (user error) — possible
-   given anon-rss = 99% of limit, but failcnt=47 suggests kernel issue.
-3. (confidence 0.1) NUMA imbalance — weak signal only.
+   commit f9c645621a28 ("memcg, oom: don't require __GFP_FS") and matching
+   call trace frame `mem_cgroup_out_of_memory`.
+2. (confidence 0.5) misconfigured cgroup memory.high limit — anon-rss
+   = 99% of limit, dying tasks might be throttled (cf. 892962a26026).
+3. (confidence 0.2) global memory pressure unrelated to cgroup — order=0
+   alloc, but failcnt=47 makes this unlikely.
 
-### Selected: #1
-[detailed explanation of hypothesis 1, evidence, commits, etc.]
+### Critique
+Why might #2 be correct instead of #1? The user's report shows
+memory.high pressure, and 892962a26026 specifically addresses dying-task
+throttling on memory.high — if the workload had short-lived processes,
+this would directly explain the symptoms. The lack of explicit "throttled"
+log line is the main weakness of #2.
+
+### Selected: #1 (confidence 0.7)
+[detailed explanation...]
 ```
-
-This avoids over-specificity (locking onto one commit when the ground truth
-is a broader pattern). If only ONE hypothesis fits, still list it as #1
-confidence 0.9+ and explain why alternatives were ruled out.
 
 ## CRITICAL TERMINATION RULES
 - Each turn you MUST do EXACTLY ONE of:

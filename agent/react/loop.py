@@ -43,6 +43,11 @@ class ReactResult:
     messages: list[Message] = field(default_factory=list)
     tool_trace: list[dict] = field(default_factory=list)
     tokens_used: int = 0
+    # v2.3: structured evidence hashes extracted from tool outputs. The node
+    # layer batch-fills titles from DB and merges into state["evidence"] so
+    # bind_claims and recall@10 reflect what the agent actually found during
+    # ReAct (not just the pre-ReAct BM25 triage retrieval).
+    react_evidence_hashes: list[str] = field(default_factory=list)
 
 
 def run_react_loop(*, provider, registry: ToolRegistry, route: str,
@@ -63,6 +68,11 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
     fail_counts: Counter = Counter()   # (tool, args) → times it errored
     tokens_used = 0
     finalize_reminder_added = False
+    # v2.3: structured evidence (commit hashes) extracted from tool outputs.
+    # Dedup while preserving first-seen order so the most-recently-found
+    # candidates rank ahead of older ones.
+    seen_hashes: list[str] = []
+    seen_hash_set: set[str] = set()
 
     for step in range(1, max_iter + 1):
         # Force a final answer when we're near the budget — last iteration or
@@ -99,7 +109,8 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
         ):
             verdict = ("insufficient_evidence"
                        if "<insufficient_evidence>" in content else "diagnosed")
-            return ReactResult(verdict, content, step, messages, trace, tokens_used)
+            return ReactResult(verdict, content, step, messages, trace,
+                               tokens_used, list(seen_hashes))
 
         # Tool calls requested → dispatch each, thread results back in.
         messages.append(Message(role="assistant", content=resp.content or "",
@@ -120,20 +131,32 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
                                     name=name, content=content))
             trace.append({"step": step, "tool": name,
                           "args": raw_args, "error": errored})
+            # v2.3: harvest commit hashes from this tool's output. Regex
+            # matches both short (12) and full (40) lowercase hex hashes; we
+            # store the 12-prefix as the canonical key (matches recall@10's
+            # prefix-match logic in eval/runner_v2.py).
+            if not errored:
+                import re
+                for h in re.findall(r"\b([0-9a-f]{12,40})\b", content):
+                    hk = h[:12]
+                    if hk not in seen_hash_set:
+                        seen_hash_set.add(hk)
+                        seen_hashes.append(h)
 
         # Failure handling (ADR-019 D4, M22 §4.3): a tool stuck failing means
         # the evidence isn't reachable → insufficient_evidence; the same call
         # repeated means the LLM is looping without progress → max_iter_reached.
         if max(fail_counts.values(), default=0) >= REPEAT_LIMIT:
             return ReactResult("insufficient_evidence", "", step,
-                               messages, trace, tokens_used)
+                               messages, trace, tokens_used, list(seen_hashes))
         if max(call_counts.values(), default=0) >= REPEAT_LIMIT:
             return ReactResult("max_iter_reached", "", step,
-                               messages, trace, tokens_used)
+                               messages, trace, tokens_used, list(seen_hashes))
         if tokens_used >= TOKEN_BUDGET:           # ADR-019 D3 cost ceiling
             return ReactResult("budget_exhausted", "", step,
-                               messages, trace, tokens_used)
+                               messages, trace, tokens_used, list(seen_hashes))
 
         # TODO(M22 D5): checkpointer.save(state) after each step
 
-    return ReactResult("max_iter_reached", "", max_iter, messages, trace, tokens_used)
+    return ReactResult("max_iter_reached", "", max_iter, messages, trace,
+                       tokens_used, list(seen_hashes))

@@ -56,6 +56,14 @@ def react_investigation(state: dict) -> dict:
         result.verdict, result.iterations, result.tokens_used,
     )
 
+    # v2.3: merge ReAct-harvested commit hashes into state.evidence so
+    # downstream (bind_claims, recall@10) sees what the agent actually
+    # surfaced via search_commits / browse_subsystem_fixes / etc.
+    merged_evidence = _merge_react_evidence(
+        existing=state.get("evidence", []),
+        react_hashes=result.react_evidence_hashes,
+    )
+
     return {
         **state,
         "react_verdict": result.verdict,
@@ -63,9 +71,59 @@ def react_investigation(state: dict) -> dict:
         "react_tool_trace": result.tool_trace,
         "react_iterations": result.iterations,
         "react_tokens_used": result.tokens_used,
+        "evidence": merged_evidence,
         # backward compat: render_md reads final_analysis
         "final_analysis": result.final_answer,
     }
+
+
+def _merge_react_evidence(existing: list[dict], react_hashes: list[str]) -> list[dict]:
+    """Look up subjects for ReAct-harvested hashes and append as evidence rows.
+
+    Existing evidence (from BM25 triage) keeps its order. New rows go to the
+    front of the list since the agent surfaced them more recently with more
+    context — recall@10 / bind_claims should see them first.
+
+    DB lookup failures are logged but non-fatal; we simply skip the hash.
+    """
+    if not react_hashes:
+        return existing
+
+    seen = {(e.get("commit_hash") or "")[:12] for e in existing if e.get("commit_hash")}
+    new_keys = [h for h in react_hashes if h[:12] not in seen]
+    if not new_keys:
+        return existing
+
+    try:
+        from sqlalchemy import text
+        from storage.pg.engine import get_engine
+        rows: list = []
+        with get_engine().connect() as conn:
+            # Match by 12-prefix to handle short/long-SHA interchangeably.
+            keys12 = list({h[:12] for h in new_keys})
+            rs = conn.execute(text("""
+                SELECT DISTINCT ON (substring(hash, 1, 12))
+                       hash, subject, body
+                  FROM kernel_commit
+                 WHERE substring(hash, 1, 12) = ANY(:keys)
+                 ORDER BY substring(hash, 1, 12), commit_date DESC NULLS LAST
+            """), {"keys": keys12}).fetchall()
+            rows = list(rs)
+    except Exception as exc:
+        logger.warning("react evidence DB lookup failed: %s", exc)
+        rows = []
+
+    react_rows: list[dict] = []
+    for r in rows:
+        react_rows.append({
+            "route": "commit",
+            "score": 0.95,
+            "title": (r.subject or "")[:200],
+            "body": (r.body or "")[:500],
+            "commit_hash": r.hash,
+            "metadata": {"source": "react_harvest"},
+        })
+    return react_rows + existing
 
 
 def _build_user_prompt(state: dict) -> str:

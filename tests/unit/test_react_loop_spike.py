@@ -49,6 +49,62 @@ def _registry():
 
 # ── loop behaviour ──────────────────────────────────────────────────────────
 
+def test_loop_harvests_commit_hashes_from_tool_output():
+    """v2.3: hashes mentioned in tool results land in react_evidence_hashes
+    so the node layer can merge them into state.evidence for bind_claims +
+    recall@10."""
+    reg = ToolRegistry()
+    reg.register(Tool(
+        "search_commits", "search", {"type": "object", "properties": {}},
+        fn=lambda **kw: (
+            "[1] score=0.80 | net: fix crash | hash=9ab5cf19fb0e\n"
+            "[2] score=0.70 | net: another | hash=8615d2e1fb7d\n"
+        ),
+    ))
+    provider = FakeProvider(
+        _resp_tools(_tool_call("search_commits")),
+        _resp_final("<final_answer>fixed by 9ab5cf19fb0e</final_answer>"),
+    )
+    result = run_react_loop(provider=provider, registry=reg, route="kernel",
+                            system_prompt="s", user_prompt="u")
+    assert result.verdict == "diagnosed"
+    keys = {h[:12] for h in result.react_evidence_hashes}
+    assert "9ab5cf19fb0e" in keys
+    assert "8615d2e1fb7d" in keys
+
+
+def test_loop_evidence_hashes_dedup():
+    """Same hash returned by two tools = one entry."""
+    reg = ToolRegistry()
+    reg.register(Tool("a", "x", {"type": "object", "properties": {}},
+                       fn=lambda **kw: "hash=abc123def456"))
+    reg.register(Tool("b", "y", {"type": "object", "properties": {}},
+                       fn=lambda **kw: "look at abc123def456 again"))
+    provider = FakeProvider(
+        _resp_tools(_tool_call("a"), _tool_call("b")),
+        _resp_final("<final_answer>done</final_answer>"),
+    )
+    result = run_react_loop(provider=provider, registry=reg, route="kernel",
+                            system_prompt="s", user_prompt="u")
+    assert len(result.react_evidence_hashes) == 1
+    assert result.react_evidence_hashes[0].startswith("abc123def456")
+
+
+def test_loop_errored_tool_does_not_harvest():
+    """Errored tool output must not contribute fake hashes."""
+    def _boom():
+        raise RuntimeError("see hash=deadbeefcafe somewhere")
+    reg = ToolRegistry()
+    reg.register(Tool("b", "x", {"type": "object", "properties": {}}, fn=_boom))
+    provider = FakeProvider(
+        _resp_tools(_tool_call("b")),
+        _resp_final("<final_answer>done</final_answer>"),
+    )
+    result = run_react_loop(provider=provider, registry=reg, route="kernel",
+                            system_prompt="s", user_prompt="u")
+    assert result.react_evidence_hashes == []
+
+
 def test_loop_dispatches_tool_then_diagnoses():
     provider = FakeProvider(
         _resp_tools(_tool_call("get_meminfo")),

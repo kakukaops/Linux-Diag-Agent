@@ -13,7 +13,10 @@ Investigate the kernel fault described below and produce a definitive root-cause
 1. If raw dmesg is provided, call `parse_dmesg` first to extract structured events; use `extract_call_trace` to isolate the crash site.
 2. For each function in the call trace, use `search_code` to locate the source, `get_function_source` to inspect the implementation.
 3. Search for historical fixes: `search_commits` with symptom keywords → `get_commit_detail` → `check_backport_status` to confirm if the fix is in this kernel.
-   - **If `search_commits` with the crash-site symbol returns nothing useful, call `expand_query_from_symbol` next.** The symbol that crashed (e.g. `tcp_send_mss`) is rarely the one mentioned in the fix commit body — the fix more often touches an upstream variable / called helper (e.g. `sk_gso_max_size`). The expand tool reads the function source and returns related identifiers to retry the search with.
+   - **If `search_commits` with the crash-site symbol returns nothing useful, switch to `browse_subsystem_fixes` or `expand_query_from_symbol`.** This is the v2.3 vocab-gap protocol — when symbol-level BM25 fails, two escape routes:
+     1. **`browse_subsystem_fixes(subsystem_prefixes='net,tcp,ipv4', contains='crash')`** — scan recent fix subjects in the relevant subsystem. Equivalent to `git log --oneline --grep=fix net/` for a human reviewer. **Use this first** when you have a clear subsystem (net / ext4 / mm / drm).
+     2. **`expand_query_from_symbol(symbol='tcp_send_mss')`** — read the function source and surface neighbor identifiers (struct fields, callees, locals). Then retry `search_commits` with the returned vocabulary.
+   - Chain the two if needed: expand_query gives you `sk_gso_max_size`, then browse_subsystem_fixes confirms the subsystem-level fix history.
 4. Cross-reference with `search_syzbot` and `search_bugs` for known crash patterns matching the call trace or panic type.
 5. Before recommending a backport, always call `get_regression_fixes` to verify the fix does not itself introduce a regression.
 6. Use `search_lkml` to find patch discussion threads for additional context on known-tricky fixes.

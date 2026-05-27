@@ -23,7 +23,7 @@ def test_build_registry_has_all_categories():
     # Category D
     assert {"get_commit_detail", "get_commit_diff", "check_backport_status",
             "get_regression_fixes", "get_function_source", "get_call_graph",
-            "expand_query_from_symbol"} <= names
+            "expand_query_from_symbol", "browse_subsystem_fixes"} <= names
     # Category B
     assert {"parse_dmesg", "parse_sosreport", "extract_call_trace"} <= names
 
@@ -145,6 +145,47 @@ def test_expand_query_from_symbol_extracts_neighbors():
     # Should drop C keywords / common
     assert "struct" not in result
     assert "return" not in result.split("Candidate")[1]
+
+
+def test_browse_subsystem_fixes_formats_results():
+    """When net: fix commits are returned, format them with hash + date + subject."""
+    from agent.react.tools.code_tools import _browse_subsystem_fixes
+    import datetime as _dt
+    class _Row:
+        def __init__(self, h, s, d, o):
+            self.hash, self.subject, self.commit_date, self.origin = h, s, d, o
+    fake_rows = [
+        _Row("9ab5cf19fb0e4680f95e506d6c544259bf1111c4",
+             "net: fix crash when config small gso_max_size/gso_ipv4_max_size",
+             _dt.datetime(2024, 10, 23), "mainline"),
+        _Row("8615d2e1fb7dc6570b463d893aad1cfd82e65329",
+             "net: fix crash when config small gso_max_size/gso_ipv4_max_size",
+             _dt.datetime(2024, 10, 23), "olk"),
+    ]
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        conn = mock_eng.return_value.connect.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = fake_rows
+        result = _browse_subsystem_fixes(subsystem_prefixes="net,tcp",
+                                          contains="crash")
+    assert "9ab5cf19fb0e" in result
+    assert "gso_max_size" in result
+    assert "mainline" in result
+
+
+def test_browse_subsystem_fixes_empty():
+    from agent.react.tools.code_tools import _browse_subsystem_fixes
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        conn = mock_eng.return_value.connect.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = []
+        result = _browse_subsystem_fixes(subsystem_prefixes="ext4",
+                                          contains="nonexistent")
+    assert "no fix commits" in result.lower()
+
+
+def test_browse_subsystem_fixes_rejects_empty_prefix():
+    from agent.react.tools.code_tools import _browse_subsystem_fixes
+    result = _browse_subsystem_fixes(subsystem_prefixes="")
+    assert "required" in result.lower()
 
 
 def test_expand_query_from_symbol_no_source():

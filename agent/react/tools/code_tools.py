@@ -181,6 +181,73 @@ def _expand_query_from_symbol(*, symbol: str,
     return "\n".join(lines)
 
 
+def _browse_subsystem_fixes(*, subsystem_prefixes: str,
+                            contains: str | None = None,
+                            since_months: int = 18,
+                            limit: int = 25,
+                            **_: object) -> str:
+    """Browse recent 'fix' commits in a subsystem by subject prefix.
+
+    Kernel commits follow the convention `<subsystem>: <change>`, e.g.
+    `net: fix crash when ...` or `ext4: fix race in ...`. When BM25 with
+    specific symbols misses (because the fix subject uses different
+    vocabulary), browse-by-subsystem surfaces candidates a human engineer
+    would scan via `git log --oneline net/`.
+    """
+    import datetime
+    from sqlalchemy import text
+    from storage.pg.engine import get_engine
+
+    prefixes = [p.strip().lower() for p in subsystem_prefixes.split(",") if p.strip()]
+    if not prefixes:
+        return "error: subsystem_prefixes is required (comma-separated, e.g. 'net,tcp')"
+    if len(prefixes) > 8:
+        prefixes = prefixes[:8]
+    cutoff = datetime.date.today() - datetime.timedelta(days=since_months * 30)
+
+    prefix_clauses = " OR ".join(
+        f"LOWER(subject) LIKE :pfx{i}" for i in range(len(prefixes))
+    )
+    params: dict = {f"pfx{i}": f"{p}:%" for i, p in enumerate(prefixes)}
+    params["cutoff"] = cutoff
+    params["limit"] = min(max(limit, 5), 50)
+
+    contains_clause = ""
+    if contains:
+        contains_clause = " AND LOWER(subject) LIKE :contains"
+        params["contains"] = f"%{contains.lower()}%"
+
+    sql = f"""
+        SELECT hash, subject, commit_date, origin
+          FROM kernel_commit
+         WHERE ({prefix_clauses})
+           AND LOWER(subject) LIKE '%fix%'
+           AND commit_date > :cutoff
+           {contains_clause}
+         ORDER BY commit_date DESC
+         LIMIT :limit
+    """
+    try:
+        with get_engine().connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+    except Exception as exc:
+        return f"DB error: {exc}"
+    if not rows:
+        contains_part = f" containing '{contains}'" if contains else ""
+        return (f"No fix commits in subsystems {prefixes}{contains_part} "
+                f"since {cutoff}.")
+
+    lines = [f"Recent fix commits in {prefixes}"
+             + (f" containing '{contains}'" if contains else "")
+             + f" since {cutoff} (newest first):"]
+    for r in rows:
+        d = r.commit_date.date() if r.commit_date else "?"
+        origin = r.origin or "?"
+        lines.append(f"  {r.hash[:12]} {d!s:<11} [{origin:<8}] "
+                     f"{(r.subject or '')[:120]}")
+    return "\n".join(lines)
+
+
 def _get_call_graph(*, func_name: str,
                     direction: str = "callers",
                     kernel_version: str | None = None,
@@ -413,8 +480,53 @@ EXPAND_QUERY_FROM_SYMBOL = Tool(
     routes=_K,
 )
 
+BROWSE_SUBSYSTEM_FIXES = Tool(
+    name="browse_subsystem_fixes",
+    description=(
+        "Browse recent 'fix' commits in a kernel subsystem by subject "
+        "prefix. Use this when BM25 search with specific symbols misses "
+        "the fix commit because the patch subject uses different "
+        "vocabulary than the crash trace. This is the tool equivalent of "
+        "a kernel engineer running `git log --oneline --grep=fix net/` "
+        "to scan recent patches. "
+        "Example: for a TCP/skb crash, call with "
+        "subsystem_prefixes='net,tcp,ipv4', contains='crash' to surface "
+        "subjects like 'net: fix crash when config small gso_max_size'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "subsystem_prefixes": {
+                "type": "string",
+                "description": ("Comma-separated subject prefixes to match "
+                                "(without colon), e.g. 'net,tcp,ipv4' or "
+                                "'ext4,jbd2' or 'mm,memcg'."),
+            },
+            "contains": {
+                "type": "string",
+                "description": ("Optional extra substring filter on the "
+                                "subject, e.g. 'crash', 'overflow', 'leak'."),
+            },
+            "since_months": {
+                "type": "integer",
+                "default": 18,
+                "description": "How far back to look (default 18 months).",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 25,
+                "description": "Max results (5-50, default 25).",
+            },
+        },
+        "required": ["subsystem_prefixes"],
+    },
+    fn=_browse_subsystem_fixes,
+    routes=_K,
+)
+
 ALL_CODE_TOOLS = [
     GET_COMMIT_DETAIL, GET_COMMIT_DIFF, CHECK_BACKPORT_STATUS,
     GET_REGRESSION_FIXES, GET_FUNCTION_SOURCE, GET_CALL_GRAPH,
-    EXPAND_QUERY_FROM_SYMBOL, GET_DEVICE_MAJOR_MAPPING,
+    EXPAND_QUERY_FROM_SYMBOL, BROWSE_SUBSYSTEM_FIXES,
+    GET_DEVICE_MAJOR_MAPPING,
 ]

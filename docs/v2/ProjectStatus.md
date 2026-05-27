@@ -188,6 +188,53 @@ LLM judge 否定的 7 例失败模式归为 3 类：
 | "patch lineage / Fixes-chain 物化" | ❌ **重大缺口 — 87K 数据在手未建图谱**，P0a 立刻补 |
 | "跨 distro 采集 Ubuntu/RHEL/Android" | ⚪ 不适用：OLK 单 distro 定位（FAQ Q9 论证）|
 
+## 8.4 v2.2 路径（Run 7 grounding eval 后的决策）
+
+Run 7 用新 grounding metric 揭示真相：**100% diagnosed cases 都是 speculative**，0 个 grounded。详见 [eval_v2.1_p0p1p2_grounding_report.md](eval_v2.1_p0p1p2_grounding_report.md)。
+
+根本原因不是 metric 太严（overlap 阈值 0.20 校准合理），是两件事被诚实暴露：
+
+1. **BM25 召回质量结构性不足** —— OOM 类 recall 长期 0%，agent 拿到的 evidence 池根本不含 ground truth commit → 引用啥都跟 claim 无语义关系
+2. **配置/硬件故障没 commit 可引用** —— panic-001（initramfs 配置）/ hardware-* / io-hang-001 这类，ground truth 不在 commit 域
+
+### v2.2 主 KPI 切换
+
+| 旧 KPI（已废）| 新 KPI（生效）|
+|---|---|
+| `root_cause_accuracy ≥ 60%` | **`grounded_correct_rate ≥ 30%`** |
+| 看似多少 case 答对 | 多少 case 答对且引用真有语义证据 |
+
+旧 metric 是单 judge + verified-by-hash-existence 拼出的虚高数。新 metric 是真实下限。
+
+### v2.2 P0 — 修 BM25 召回
+
+两条路径：
+
+**路径 B（先做）— AND-priority recall + 扩 candidate pool**
+- 工作量：2 天
+- 修 `retrieval/recall/*.py`：先 AND-match（所有关键词都命中），0 hit 才 OR 降级
+- candidate pool 50 → 100 给 reranker
+- 预期：oom recall 0% → 15-25%；grounded_correct_rate 0% → 15%+
+- 风险：rerank token 成本 ~6×；AND-match 在 query 模糊时直接 0 recall
+
+**路径 A（如 B 不够再上）— Tantivy / Lucene 替换 PG**
+- 工作量：1-2 周
+- 自建 BM25 服务，替换 `ts_rank_cd` 为 BM25Okapi
+- 迁移 commit / lkml / bug / cve / syzbot 5 张表索引
+- 预期：oom recall 0% → 30%+；整体 recall 53% → 70%+
+- 风险：新依赖、容器化、运维一份
+
+**判定标准**：跑完 B 看 grounded_correct_rate。≥30% 收尾；<15% 上 A。
+
+### v2.2 P1（次要修复）
+
+| | |
+|---|---|
+| 调查 lockdep-001 / change-001 2-3 iter 早终止 | P2 evidence trace 要求可能让 agent 提前 bailout 但 verdict 未对应 |
+| 修 atomgit ~3 个真实可恢复的 gap | 30 min 小补 backfill |
+| 扩 cases_v2 → 30+ 例 | 当前 15 例分类后 n=1-3 太弱 |
+| 增量 issue 更新机制（gitee/atomgit）| 当前一次性 backfill，新 issue 进不来 |
+
 ## 9. 本会话已落地的改进（2026-05-25）
 
 | 改动 | 文件 | 影响 |

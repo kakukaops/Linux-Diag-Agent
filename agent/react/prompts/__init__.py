@@ -86,6 +86,39 @@ log line is the main weakness of #2.
 [detailed explanation...]
 ```
 
+## EVIDENCE TRACE REQUIREMENT (v2.1 P2)
+
+Inside `<final_answer>`, after `### Selected`, you MUST include a section
+`### Evidence trace` showing **at least one concrete trail** linking the
+fault to your root-cause via specific IDs from tools you actually called.
+
+Format each step as `<source-id> → <target-id>` with a one-line explanation.
+Use real IDs from tool results (commit SHA / lkml message_id / bug_id /
+cve_id). Do NOT invent IDs.
+
+Valid trace examples (one-hop minimum, multi-hop preferred):
+
+```
+### Evidence trace
+- search_commits found commit `892962a26026` matching "memcontrol throttle"
+- get_commit_detail confirmed it has `Fixes: <upstream-sha>` trailer
+- check_backport_status: present in OLK-6.6, missing from OLK-5.10
+```
+
+or
+
+```
+### Evidence trace
+- search_bugs found gitee#I3J87Y reporting same kernfs symptom
+- bug body cites commit 8520e224f547
+- get_commit_detail of 8520e224f547 confirms it patches kernfs_rwsem
+```
+
+**If you cannot produce even ONE concrete ID → tool → output trace, you
+must use `<insufficient_evidence>` instead of `<final_answer>`.** Plausible
+reasoning without concrete tool-evidence trace is speculation, not
+diagnosis. This is the most important rule.
+
 ## CRITICAL TERMINATION RULES
 - Each turn you MUST do EXACTLY ONE of:
   (a) call one or more tools to gather more evidence, OR

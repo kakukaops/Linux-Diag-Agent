@@ -178,6 +178,12 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
             agent_answer=state.get("final_analysis", "") or state.get("react_final_answer", ""),
         )
 
+    # v2.1 P1-1: groundedness from bind_claims (None if not yet present)
+    groundedness = state.get("groundedness")
+    n_verified = len(state.get("verified_claims") or [])
+    n_speculative = len(state.get("speculative_claims") or [])
+    n_total_claims = n_verified + n_speculative
+
     return {
         "case_id": case_id,
         "category": case.get("category"),
@@ -197,6 +203,13 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
         "evidence_count": len(evidence),
         "recall_at_10": round(recall, 3),
         "traceability": round(traceability, 3),
+        # v2.1: claim grounding
+        "groundedness": groundedness,
+        "n_verified_claims": n_verified,
+        "n_speculative_claims": n_speculative,
+        "verified_claim_rate": (
+            round(n_verified / n_total_claims, 3) if n_total_claims else None
+        ),
         # Root cause judge
         "root_cause_correct": root_cause_correct,
         "judge_reasoning": judge_reasoning,
@@ -237,8 +250,41 @@ def _compute_recall(evidence: list[dict], case: dict) -> float:
     return (hit_commits + hit_bugs) / total_expected
 
 
-def _llm_judge(ground_truth: str, agent_answer: str) -> tuple[bool, str]:
-    """Use the navigator LLM to judge whether agent_answer matches ground_truth."""
+_JUDGE_PROMPT_AFFIRMATIVE = """\
+You are an expert Linux kernel engineer evaluating a diagnosis report.
+
+GROUND TRUTH root cause:
+{gt}
+
+AGENT ANSWER:
+{ans}
+
+Does the agent answer correctly identify the root cause?
+Answer JSON only: {{"correct": true|false, "reasoning": "one sentence"}}
+"""
+
+_JUDGE_PROMPT_DEVILS_ADVOCATE = """\
+You are an expert Linux kernel engineer auditing a diagnosis report for
+INACCURACIES. Your job is to find at least one specific claim in the agent
+answer that contradicts the ground truth, or to confirm everything checks out.
+
+GROUND TRUTH root cause:
+{gt}
+
+AGENT ANSWER:
+{ans}
+
+If you can identify ANY specific factual mismatch (wrong subsystem, wrong
+mechanism, wrong commit cited, missing key element), the answer is INCORRECT.
+Only if every substantive claim aligns with the ground truth is the answer
+CORRECT.
+
+Answer JSON only: {{"correct": true|false, "reasoning": "one sentence describing the mismatch or confirming alignment"}}
+"""
+
+
+def _llm_judge_single(prompt: str) -> tuple[bool | None, str]:
+    """Run one LLM judge query, return (correct?, reasoning) or (None, err)."""
     try:
         from llm.provider.base import ChatRequest, Message
         from llm.provider.registry import get_provider
@@ -247,14 +293,6 @@ def _llm_judge(ground_truth: str, agent_answer: str) -> tuple[bool, str]:
 
         cfg = get_config()
         provider = get_provider(cfg.llm.navigator.backend)
-
-        prompt = (
-            "You are an expert Linux kernel engineer evaluating a diagnosis report.\n\n"
-            f"GROUND TRUTH root cause:\n{ground_truth}\n\n"
-            f"AGENT ANSWER:\n{agent_answer[:2000]}\n\n"
-            "Does the agent answer correctly identify the root cause? "
-            "Answer JSON only: {\"correct\": true|false, \"reasoning\": \"one sentence\"}"
-        )
         req = ChatRequest(
             messages=[Message(role="user", content=prompt)],
             model=cfg.llm.navigator.model,
@@ -266,8 +304,50 @@ def _llm_judge(ground_truth: str, agent_answer: str) -> tuple[bool, str]:
         data = json.loads(content)
         return bool(data.get("correct")), str(data.get("reasoning", ""))
     except Exception as exc:
-        logger.warning("LLM judge failed: %s", exc)
         return None, f"judge_error: {exc}"
+
+
+def _llm_judge(ground_truth: str, agent_answer: str) -> tuple[bool | None, str]:
+    """v2.1 P1-2: dual-judge with prompt-framing variance.
+
+    Two LLM passes:
+      A. Affirmative framing — "does it correctly identify the root cause?"
+         Default lean is yes-leaning (LLM tends to validate plausible answers).
+      B. Devil's-advocate framing — "find ANY mismatch; only confirm if all
+         claims align." Default lean is no-leaning.
+
+    Aggregate:
+      A=True  & B=True  → True   (both lenses confirm correct)
+      A=False & B=False → False  (both lenses confirm wrong)
+      A!=B              → None   (judge_uncertain — excluded from accuracy)
+
+    This catches the most common judge failures: lenient yes-bias on
+    plausible-but-wrong answers, and harsh no-bias on technically-correct
+    but differently-worded answers. Genuinely different models would be
+    better; same-model-different-framing is the cheap proxy.
+    """
+    ans = agent_answer[:2000]
+    a_correct, a_reason = _llm_judge_single(
+        _JUDGE_PROMPT_AFFIRMATIVE.format(gt=ground_truth, ans=ans)
+    )
+    b_correct, b_reason = _llm_judge_single(
+        _JUDGE_PROMPT_DEVILS_ADVOCATE.format(gt=ground_truth, ans=ans)
+    )
+
+    # Both judges failed → error
+    if a_correct is None and b_correct is None:
+        logger.warning("Both judges failed: A=%s B=%s", a_reason, b_reason)
+        return None, f"judge_a_failed: {a_reason} | judge_b_failed: {b_reason}"
+    # One failed → fall back to the working one
+    if a_correct is None:
+        return b_correct, f"[only judge B available] {b_reason}"
+    if b_correct is None:
+        return a_correct, f"[only judge A available] {a_reason}"
+    # Both succeeded — check agreement
+    if a_correct == b_correct:
+        return a_correct, f"[both agree] A: {a_reason} | B: {b_reason}"
+    # Disagreement → judge_uncertain (excluded from accuracy denominator)
+    return None, f"[judges disagree] A({a_correct}): {a_reason} | B({b_correct}): {b_reason}"
 
 
 def _make_error_result(case: dict, err: str) -> dict:
@@ -294,6 +374,10 @@ def _zero_metrics() -> dict:
         "evidence_count": 0,
         "recall_at_10": 0.0,
         "traceability": 0.0,
+        "groundedness": None,
+        "n_verified_claims": 0,
+        "n_speculative_claims": 0,
+        "verified_claim_rate": None,
         "root_cause_correct": None,
         "judge_reasoning": None,
         "report_md_length": 0,
@@ -336,11 +420,59 @@ def _compute_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         if fault_results else None
     )
 
-    # Judge results
-    judge_results = [r for r in ok if r.get("root_cause_correct") is not None]
+    # Judge results — dual-judge (P1-2) returns None for "judges disagreed"
+    diagnosed_with_gt = [r for r in ok if r.get("react_verdict") == "diagnosed"
+                         and r.get("judge_reasoning")]  # judged at all
+    judge_results = [r for r in diagnosed_with_gt if r.get("root_cause_correct") is not None]
+    judge_uncertain = [r for r in diagnosed_with_gt if r.get("root_cause_correct") is None]
     judge_acc = (
         sum(1 for r in judge_results if r["root_cause_correct"]) / len(judge_results)
         if judge_results else None
+    )
+    judge_uncertain_rate = (
+        round(len(judge_uncertain) / len(diagnosed_with_gt), 3)
+        if diagnosed_with_gt else None
+    )
+
+    # v2.1 P1-1 — grounding-aware metrics (anti-overconfidence; the user
+    # wants accuracy not score-gaming):
+    #
+    #   grounded_rate    = of cases reaching diagnosed, what % had
+    #                      groundedness=="grounded" (claims trace to evidence)
+    #   speculation_rate = of cases reaching diagnosed, what % were speculative
+    #   abstention_rate  = of ALL cases, what % chose insufficient_evidence
+    #                      (a CORRECT outcome when evidence is missing — not
+    #                      counted as failure)
+    #   grounded_correct = of grounded cases that were ALSO judge-correct
+    #                      (the strictest, most-honest accuracy measure)
+    #
+    diagnosed = [r for r in ok if r.get("react_verdict") == "diagnosed"]
+    grounded = [r for r in diagnosed if r.get("groundedness") == "grounded"]
+    speculative = [r for r in diagnosed if r.get("groundedness") == "speculative"]
+    abstained = [r for r in ok if r.get("react_verdict") == "insufficient_evidence"]
+
+    grounded_rate = (
+        round(len(grounded) / len(diagnosed), 3) if diagnosed else None
+    )
+    speculation_rate = (
+        round(len(speculative) / len(diagnosed), 3) if diagnosed else None
+    )
+    abstention_rate = round(len(abstained) / len(ok), 3) if ok else None
+
+    # Strictest accuracy: judge-correct AND grounded
+    grounded_judged = [r for r in grounded if r.get("root_cause_correct") is not None]
+    grounded_correct_rate = (
+        round(sum(1 for r in grounded_judged if r["root_cause_correct"]) /
+              len(grounded_judged), 3)
+        if grounded_judged else None
+    )
+
+    # avg claim-verification rate across diagnosed cases that had claims
+    diag_with_claims = [r for r in diagnosed if r.get("verified_claim_rate") is not None]
+    avg_verified_claim_rate = (
+        round(sum(r["verified_claim_rate"] for r in diag_with_claims) /
+              len(diag_with_claims), 3)
+        if diag_with_claims else None
     )
 
     return {
@@ -356,6 +488,13 @@ def _compute_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "route_accuracy": round(route_acc, 3) if route_acc is not None else None,
         "fault_kind_accuracy": round(fault_acc, 3) if fault_acc is not None else None,
         "root_cause_accuracy": round(judge_acc, 3) if judge_acc is not None else None,
+        # v2.1 grounding metrics
+        "grounded_rate": grounded_rate,
+        "speculation_rate": speculation_rate,
+        "abstention_rate": abstention_rate,
+        "grounded_correct_rate": grounded_correct_rate,
+        "avg_verified_claim_rate": avg_verified_claim_rate,
+        "judge_uncertain_rate": judge_uncertain_rate,
         "per_category": _per_category(ok),
     }
 
@@ -386,33 +525,46 @@ def _print_case_result(r: dict) -> None:
     recall = r.get("recall_at_10", 0)
     judge = r.get("root_cause_correct")
     judge_str = ("✓" if judge else "✗") if judge is not None else "-"
+    gnd = r.get("groundedness") or "-"
+    gnd_str = {"grounded": "G", "speculative": "S", "n/a": "-"}.get(gnd, "?")
+    vcr = r.get("verified_claim_rate")
+    vcr_str = f"{vcr:.0%}" if vcr is not None else "-"
     print(
         f"  [{r['case_id']:<20}] {status:<22} route={route:<14}{route_ok} "
-        f"recall={recall:.0%} judge={judge_str} "
+        f"recall={recall:.0%} judge={judge_str} gnd={gnd_str} vcr={vcr_str:>5} "
         f"iter={r.get('react_iterations',0)} tok={r.get('react_tokens_used',0):,}"
     )
 
 
 def _print_summary(s: dict) -> None:
-    print(f"\n{'='*65}")
+    print(f"\n{'='*70}")
     print(f"v2 Eval Summary  ({s['total']} cases, {s.get('errors',0)} errors)")
-    print(f"  Recall@10:          {s.get('avg_recall_at_10', 0):.1%}")
-    print(f"  Traceability:       {s.get('avg_traceability', 0):.1%}")
-    print(f"  Route accuracy:     {s['route_accuracy']:.1%}" if s.get('route_accuracy') is not None else "  Route accuracy:     n/a")
-    print(f"  Fault-kind acc:     {s['fault_kind_accuracy']:.1%}" if s.get('fault_kind_accuracy') is not None else "  Fault-kind acc:     n/a")
-    print(f"  Root-cause acc:     {s['root_cause_accuracy']:.1%}" if s.get('root_cause_accuracy') is not None else "  Root-cause acc:     n/a")
-    print(f"  Avg latency:        {s.get('avg_elapsed_ms', 0)/1000:.1f}s")
-    print(f"  Avg ReAct iters:    {s.get('avg_react_iterations', 0):.1f}")
-    print(f"  Avg tokens used:    {s.get('avg_react_tokens', 0):,.0f}")
+    print(f"  Recall@10:           {s.get('avg_recall_at_10', 0):.1%}")
+    print(f"  Traceability:        {s.get('avg_traceability', 0):.1%}")
+    print(f"  Route accuracy:      {s['route_accuracy']:.1%}" if s.get('route_accuracy') is not None else "  Route accuracy:      n/a")
+    print(f"  Fault-kind acc:      {s['fault_kind_accuracy']:.1%}" if s.get('fault_kind_accuracy') is not None else "  Fault-kind acc:      n/a")
+    print(f"  Root-cause acc:      {s['root_cause_accuracy']:.1%}" if s.get('root_cause_accuracy') is not None else "  Root-cause acc:      n/a")
+    print(f"")
+    print(f"  ── Grounding (v2.1 P0-1 anti-overconfidence metrics) ──────────")
+    print(f"  Grounded rate:       {s['grounded_rate']:.1%} (of diagnosed)" if s.get('grounded_rate') is not None else "  Grounded rate:       n/a")
+    print(f"  Speculation rate:    {s['speculation_rate']:.1%} (of diagnosed)" if s.get('speculation_rate') is not None else "  Speculation rate:    n/a")
+    print(f"  Abstention rate:     {s['abstention_rate']:.1%} (of all)" if s.get('abstention_rate') is not None else "  Abstention rate:     n/a")
+    print(f"  ★ Grounded+Correct:  {s['grounded_correct_rate']:.1%} (judge ✓ AMONG grounded — strictest)" if s.get('grounded_correct_rate') is not None else "  ★ Grounded+Correct:  n/a")
+    print(f"  Avg verified-claim:  {s['avg_verified_claim_rate']:.1%}" if s.get('avg_verified_claim_rate') is not None else "  Avg verified-claim:  n/a")
+    print(f"  Judge uncertain:     {s['judge_uncertain_rate']:.1%} (dual judges disagreed)" if s.get('judge_uncertain_rate') is not None else "  Judge uncertain:     n/a")
+    print(f"")
+    print(f"  Avg latency:         {s.get('avg_elapsed_ms', 0)/1000:.1f}s")
+    print(f"  Avg ReAct iters:     {s.get('avg_react_iterations', 0):.1f}")
+    print(f"  Avg tokens used:     {s.get('avg_react_tokens', 0):,.0f}")
     verdicts = s.get("verdicts", {})
     if verdicts:
-        print(f"  Verdicts:           {verdicts}")
+        print(f"  Verdicts:            {verdicts}")
     cats = s.get("per_category", {})
     if cats:
         print(f"  Per category:")
         for cat, data in cats.items():
             print(f"    {cat:<16} n={data['count']} recall={data['avg_recall']:.0%} route={data['route_correct_pct']:.0%}")
-    print(f"{'='*65}\n")
+    print(f"{'='*70}\n")
 
 
 if __name__ == "__main__":

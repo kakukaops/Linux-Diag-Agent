@@ -150,18 +150,73 @@ def self_consistency(state: dict) -> dict:
     return {**state, "candidate_analyses": analyses, "final_analysis": winner}
 
 
+# Stopwords filtered out before keyword overlap (kernel-context tuned).
+_STOPWORDS = frozenset({
+    "the","a","an","is","are","was","were","be","being","been","of","to","in",
+    "on","at","by","for","with","this","that","it","its","as","and","or","but",
+    "not","no","if","then","else","when","which","who","what","where","how",
+    "from","into","because","due","cause","root","kernel","linux","commit",
+    "patch","fix","fixes","bug","issue","problem","occurs","occur","may","can",
+    "should","would","could","one","two","some","any","all","may","might",
+    "thus","therefore","hence","also","both","each","more","most","less",
+})
+
+
+def _significant_tokens(text: str) -> set[str]:
+    """Lowercase alphanumeric tokens ≥ 4 chars, stopwords removed."""
+    tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{3,}", (text or "").lower())
+    return {t for t in tokens if t not in _STOPWORDS}
+
+
+def _claim_evidence_overlap(claim_text: str, ev: dict) -> float:
+    """Fraction of significant claim tokens present in evidence body+title.
+
+    Returns 0.0 if claim has no significant tokens (we treat empty as
+    no-overlap, NOT trivially verified).
+    """
+    claim_toks = _significant_tokens(claim_text)
+    if not claim_toks:
+        return 0.0
+    ev_text = (ev.get("title") or "") + " " + (ev.get("body") or "")
+    ev_toks = _significant_tokens(ev_text)
+    if not ev_toks:
+        return 0.0
+    overlap = claim_toks & ev_toks
+    return len(overlap) / len(claim_toks)
+
+
+_OVERLAP_THRESHOLD = 0.20  # ≥ 20% of claim's significant tokens must appear
+                            # in the cited evidence to count as "grounded"
+
+
 def bind_claims(state: dict) -> dict:
     """Extract claims from ReAct final answer and verify evidence references (WBS 7.9).
 
-    When the ReAct verdict is insufficient_evidence, skips LLM claim extraction
-    and returns an empty claims list — generate_report handles the special branch.
+    v2.1 hardened (P0-1 + P0-2):
+      - Each claim is checked twofold:
+        (a) does evidence_refs contain any hash/bug_id present in our retrieved
+            evidence?  (existence — original v2.0 check)
+        (b) does the claim TEXT have ≥20% significant-token overlap with that
+            evidence's title/body?  (semantic — guards against LLM citing
+            unrelated commits)
+      - verified = (a) AND (b)
+      - Each claim gets evidence_strength ∈ [0, 1] (max overlap across cited
+        refs that exist).
+      - Computes state['groundedness']:
+          "grounded"     — ≥50 % of claims verified, all evidence_strength ≥ 0.2
+          "speculative"  — diagnosed but most claims fail one of the checks
+          "n/a"          — react_verdict ≠ diagnosed (no claims to bind)
+      - Claims are split into verified_claims and speculative_claims for the
+        renderer; the previous "all-claims-with-⚠" approach is gone.
+
+    Insufficient verdicts (insufficient_evidence / max_iter_reached /
+    budget_exhausted) skip claim extraction entirely as before.
     """
     react_verdict = state.get("react_verdict", "diagnosed")
 
-    # insufficient_evidence / max_iter_reached / budget_exhausted:
-    # no verifiable claims can be bound — pass through without LLM call.
     if react_verdict != "diagnosed":
-        return {**state, "claims": []}
+        return {**state, "claims": [], "verified_claims": [],
+                "speculative_claims": [], "groundedness": "n/a"}
 
     analysis = state.get("final_analysis", "") or state.get("react_final_answer", "")
     evidence = state.get("evidence", [])
@@ -171,6 +226,9 @@ def bind_claims(state: dict) -> dict:
     }
     evidence_by_bug: dict[int, dict] = {
         e["bug_id"]: e for e in evidence if e.get("bug_id")
+    }
+    evidence_by_msg: dict[str, dict] = {
+        e["message_id"]: e for e in evidence if e.get("message_id")
     }
 
     prompt = (
@@ -187,19 +245,54 @@ def bind_claims(state: dict) -> dict:
         claims_data = [{"text": analysis, "evidence_refs": []}]
 
     claims: list[Claim] = []
+    verified_claims: list[Claim] = []
+    speculative_claims: list[Claim] = []
     for c in claims_data:
-        refs = c.get("evidence_refs", [])
-        verified = any(
-            r in evidence_by_hash or (r.isdigit() and int(r) in evidence_by_bug)
-            for r in refs
-        )
-        claims.append({
-            "text": c.get("text", ""),
+        text = c.get("text", "") or ""
+        refs = c.get("evidence_refs") or []
+
+        # (a) which refs resolve to actual evidence rows?
+        cited_evidence: list[dict] = []
+        for r in refs:
+            if r in evidence_by_hash:
+                cited_evidence.append(evidence_by_hash[r])
+            elif isinstance(r, str) and r.isdigit() and int(r) in evidence_by_bug:
+                cited_evidence.append(evidence_by_bug[int(r)])
+            elif r in evidence_by_msg:
+                cited_evidence.append(evidence_by_msg[r])
+
+        # (b) max semantic overlap across cited evidence
+        if cited_evidence:
+            evidence_strength = max(_claim_evidence_overlap(text, ev)
+                                    for ev in cited_evidence)
+        else:
+            evidence_strength = 0.0
+
+        verified = bool(cited_evidence) and evidence_strength >= _OVERLAP_THRESHOLD
+        claim: Claim = {
+            "text": text,
             "evidence_refs": refs,
             "verified": verified,
-        })
+            "evidence_strength": round(evidence_strength, 2),
+        }
+        claims.append(claim)
+        (verified_claims if verified else speculative_claims).append(claim)
 
-    return {**state, "claims": claims}
+    # Groundedness aggregate (used by renderer + eval metrics)
+    if not claims:
+        groundedness = "speculative"  # diagnosed but extracted 0 claims = thin
+    elif len(verified_claims) / len(claims) >= 0.5:
+        groundedness = "grounded"
+    else:
+        groundedness = "speculative"
+
+    return {
+        **state,
+        "claims": claims,
+        "verified_claims": verified_claims,
+        "speculative_claims": speculative_claims,
+        "groundedness": groundedness,
+    }
 
 
 def generate_report(state: dict) -> dict:

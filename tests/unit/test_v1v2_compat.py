@@ -151,18 +151,58 @@ def test_bind_claims_skips_llm_on_insufficient():
 
 
 def test_bind_claims_calls_llm_on_diagnosed():
-    """bind_claims DOES call LLM when verdict == 'diagnosed'."""
+    """v2.1 P0-2: verified requires BOTH hash-existence AND keyword overlap
+    between claim text and evidence body/title."""
     from agent.diagnosis.nodes import bind_claims
     state = {
         "react_verdict": "diagnosed",
-        "final_analysis": "Memory overcommit caused OOM.",
-        "evidence": [{"commit_hash": "abc1234", "bug_id": None}],
+        "final_analysis": "Memory overcommit caused OOM in cgroup memcg.",
+        "evidence": [{
+            "commit_hash": "abc1234",
+            "title": "memcg: fix overcommit OOM accounting",
+            "body": "Fix incorrect memory overcommit accounting that triggers "
+                    "premature OOM kill in memcg with high anon-rss pressure.",
+            "bug_id": None,
+        }],
     }
-    mock_response = '[{"text": "OOM due to overcommit", "evidence_refs": ["abc1234"]}]'
+    mock_response = ('[{"text": "OOM triggered by memcg overcommit '
+                     'accounting bug", "evidence_refs": ["abc1234"]}]')
     with patch("agent.diagnosis.nodes._llm_call", return_value=mock_response):
         result = bind_claims(state)
     assert len(result["claims"]) == 1
     assert result["claims"][0]["verified"] is True
+    assert result["groundedness"] == "grounded"
+    assert len(result["verified_claims"]) == 1
+    assert len(result["speculative_claims"]) == 0
+
+
+def test_bind_claims_rejects_unrelated_evidence():
+    """v2.1 P0-2: LLM citing a real-but-unrelated commit must NOT be verified.
+
+    Guards against rubber-stamping irrelevant citations — the agent might
+    point at any commit in retrieved evidence; we require claim text to
+    actually overlap with that commit's content.
+    """
+    from agent.diagnosis.nodes import bind_claims
+    state = {
+        "react_verdict": "diagnosed",
+        "final_analysis": "Network stack TCP UAF.",
+        "evidence": [{
+            "commit_hash": "abc1234",
+            "title": "btrfs: convert nodesize macros into static inline",
+            "body": "Refactor nodesize helpers. Pure cleanup, no behavior change.",
+            "bug_id": None,
+        }],
+    }
+    # LLM claims TCP UAF but cites a btrfs cleanup commit → must not pass.
+    mock_response = ('[{"text": "TCP receive path use-after-free in '
+                     'tcp_v4_do_rcv", "evidence_refs": ["abc1234"]}]')
+    with patch("agent.diagnosis.nodes._llm_call", return_value=mock_response):
+        result = bind_claims(state)
+    assert result["claims"][0]["verified"] is False
+    assert result["groundedness"] == "speculative"
+    assert len(result["verified_claims"]) == 0
+    assert len(result["speculative_claims"]) == 1
 
 
 # ── 4. All SOP yaml files still load ─────────────────────────────────────────

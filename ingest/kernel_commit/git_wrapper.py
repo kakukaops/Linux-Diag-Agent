@@ -167,27 +167,56 @@ def _parse_record(record: str) -> RawCommit | None:
 def _split_body_and_files(rest: str) -> tuple[str, list[str]]:
     """Split git log output into (body, [changed_files]).
 
-    git --name-only appends file paths after a blank line following the body.
+    git --name-only appends file paths after the body, separated by a blank
+    line. The challenge: commit bodies frequently have intra-body blank
+    lines (paragraph breaks) and trailers (Link:, Closes:, Cc:, ...) that
+    contain '/' and '.' — the original parser treated those as files,
+    causing massive subsystem pollution downstream
+    (~341K rows had subsystem = "Link: https://lore.kernel.org").
+
+    Robust approach: scan from the END backward. File paths from
+    --name-only are a contiguous suffix of lines that all look like POSIX
+    paths (slash + dot, no spaces). Anything that doesn't match is body.
     """
     lines = rest.splitlines()
-    body_lines: list[str] = []
-    file_lines: list[str] = []
-    in_files = False
 
-    for line in lines:
-        if not in_files and line == "" and body_lines:
-            # Could be the separator before file list
-            in_files = True
+    # Walk from the end, collecting file-path-shaped lines as the suffix.
+    file_start = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        s = lines[i].strip()
+        if not s:
+            # Blank line — could be the body/file separator, or trailing
+            # whitespace. Keep scanning upward.
             continue
-        if in_files:
-            stripped = line.strip()
-            if stripped and "/" in stripped or (stripped and "." in stripped):
-                file_lines.append(stripped)
-            elif stripped:
-                # Not a file path — part of body
-                in_files = False
-                body_lines.append(line)
+        if _looks_like_path(s):
+            file_start = i
         else:
-            body_lines.append(line)
+            # First non-path, non-blank line from the end → body ends here.
+            break
 
-    return "\n".join(body_lines).strip(), file_lines
+    body_part = "\n".join(lines[:file_start]).rstrip()
+    file_part = [lines[i].strip() for i in range(file_start, len(lines))
+                 if lines[i].strip()]
+    return body_part, file_part
+
+
+def _looks_like_path(s: str) -> bool:
+    """Distinguish a file path from a commit-body trailer / paragraph.
+
+    Conservative rules to avoid pulling in Link:/Closes:/Reported-by:
+    trailers (which contain '/' and '.' but also spaces):
+      - no whitespace
+      - has '/' (subdir component); or is a Makefile-style top-level name
+        ending in known suffix (.c, .h, .S, .rst, .yaml, .json, Makefile,
+        Kconfig, COPYING, MAINTAINERS)
+      - no leading '#', '<', '>', ':' that would indicate quoted body text
+    """
+    if not s or " " in s or "\t" in s:
+        return False
+    if s[0] in "#<>:":
+        return False
+    if "/" in s:
+        return True
+    return s in {"Makefile", "Kconfig", "COPYING", "MAINTAINERS", "CREDITS"} \
+        or s.endswith((".c", ".h", ".S", ".rst", ".yaml", ".json", ".sh",
+                       ".py", ".txt", ".md", ".dts", ".dtsi"))

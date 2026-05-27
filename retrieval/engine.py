@@ -62,6 +62,15 @@ def retrieve(query: RetrievalQuery) -> RetrievalResult:
     # routes with differently-scaled BM25 scores (e.g. ts_rank_cd on long LKML
     # emails vs short commit bodies) don't crowd out each other.
     _normalize_by_route(all_items)
+
+    # v2.2 P0 Path B: tier-bonus. AND-tier-N hits (kept the N most-restrictive
+    # keywords) are far more relevant than tier-0 (OR fallback). Boost score
+    # by tier so they surface ahead of OR-floods without overriding signal.
+    for e in all_items:
+        tier = (e.metadata or {}).get("recall_tier")
+        if isinstance(tier, int) and tier > 0:
+            e.score = e.score * (1.0 + 0.25 * tier)   # tier 3 → 1.75×, 5 → 2.25×
+
     all_items.sort(key=lambda e: e.score, reverse=True)
     all_items, reranked = maybe_rerank(query, all_items)
 

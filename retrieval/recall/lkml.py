@@ -35,28 +35,27 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
 # ── L2 — local cache BM25 ───────────────────────────────────────────────────
 
 def _local_bm25(query: RetrievalQuery) -> list[Evidence]:
+    """v2.2 P0 Path B: AND-priority via tiered_and_query."""
+    from retrieval.recall._tsquery import tiered_and_query
     from storage.pg.engine import get_engine
 
-    tsq = _keywords_str(query.keywords or query.raw_question.split())
-    if not tsq:
+    keywords = query.keywords or query.raw_question.split()
+    if not keywords:
         return []
-    sql = text("""
-        SELECT message_id,
-               subject,
-               body,
-               ts_rank_cd(body_tsv, query) AS score
-          FROM lkml_message,
-               websearch_to_tsquery('english', :q) AS query
-         WHERE body_tsv @@ query
-         ORDER BY score DESC
-         LIMIT :lim
-    """)
-    try:
-        with get_engine().connect() as conn:
-            rows = conn.execute(sql, {"q": tsq, "lim": query.limit_per_route}).fetchall()
-    except Exception as exc:
-        logger.error("LKML local recall SQL failed: %s", exc)
+
+    with get_engine().connect() as conn:
+        rows, used_q, tier = tiered_and_query(
+            conn,
+            table="lkml_message",
+            rank_sql="ts_rank_cd(body_tsv, q)",
+            select_sql="message_id, subject, body",
+            keywords=keywords,
+            limit=query.limit_per_route,
+        )
+
+    if not rows:
         return []
+    logger.debug("[recall lkml/L2] tier=%d (%d rows) q=%r", tier, len(rows), used_q)
     return [
         Evidence(
             route=RouteTag.lkml,
@@ -64,7 +63,7 @@ def _local_bm25(query: RetrievalQuery) -> list[Evidence]:
             title=row.subject or "",
             body=(row.body or "")[:500],
             message_id=row.message_id,
-            metadata={"source": "l2_cache"},
+            metadata={"source": "l2_cache", "recall_tier": tier},
         )
         for row in rows
     ]

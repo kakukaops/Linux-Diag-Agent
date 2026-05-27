@@ -14,9 +14,13 @@ from retrieval.schema import Evidence, RetrievalQuery
 
 logger = logging.getLogger(__name__)
 
-RERANK_THRESHOLD = 1   # always rerank (raised candidate pool from 70 → 350 makes BM25 ordering unreliable)
+RERANK_THRESHOLD = 1    # always rerank
 RERANK_TOP_K = 10
-_RERANK_INPUT_CAP = 60  # max items sent to LLM; LLM context easily fits 60 short snippets
+_RERANK_INPUT_CAP = 100  # v2.2 P0 Path B: match limit_per_route. Each route
+                         # contributes ≤ 100 candidates; total can be much
+                         # higher (7 routes), but with AND-priority recall
+                         # most routes return < 30 hits and total fits well
+                         # under deepseek-v4-flash 128K context.
 
 _RERANK_PROMPT = """\
 You are a Linux kernel expert. Given the question and a list of retrieved items, \

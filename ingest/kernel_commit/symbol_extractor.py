@@ -108,7 +108,26 @@ def extract_symbols_for_commit(
 
     Each row: {'commit_hash', 'symbol', 'file_path', 'kind'}.
     Deduplicated by (file_path, symbol) within a commit.
+
+    Fast-path: skip merge commits (2+ parents) — `git show` on a merge
+    outputs nothing by default and the real changes are in the parent
+    commits (which are separate rows in our DB).
     """
+    # Cheap parent-count check first (~3 ms vs 70 ms for full git show).
+    try:
+        parents = subprocess.run(
+            ["git", "-C", str(repo_path), "log", "-1", "--format=%P", commit_hash],
+            capture_output=True, timeout=5.0, check=False,
+        )
+        if parents.returncode != 0:
+            return []
+        n_parents = len(parents.stdout.split())
+        if n_parents != 1:
+            # 0 = root commit (no diff), 2+ = merge (diff is empty by default).
+            return []
+    except subprocess.TimeoutExpired:
+        return []
+
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_path), "show",
@@ -186,6 +205,10 @@ def backfill_batch(
             "             WHERE lcs.commit_hash = kc.hash)",
             # Only commits whose affected_versions intersects available repos.
             f"kc.affected_versions && :versions",
+            # Skip gitee MR-merge commits — they have no per-merge diff;
+            # the actual changes are in the merged-in parent commits
+            # (which are separate rows in this table).
+            "kc.subject NOT LIKE '!%'",
         ]
         params: dict = {"limit": limit, "versions": repo_tags}
         if since_date:
@@ -220,18 +243,32 @@ def backfill_batch(
 
             extracted = extract_symbols_for_commit(repo_path, row.hash)
             processed += 1
-            if not extracted:
-                continue
-            conn.execute(
-                text("""
-                    INSERT INTO link_commit_symbol
-                        (commit_hash, file_path, symbol, kind)
-                    VALUES (:commit_hash, :file_path, :symbol, :kind)
-                    ON CONFLICT (commit_hash, symbol, file_path) DO NOTHING
-                """),
-                extracted,
-            )
-            rows_total += len(extracted)
+            if extracted:
+                conn.execute(
+                    text("""
+                        INSERT INTO link_commit_symbol
+                            (commit_hash, file_path, symbol, kind)
+                        VALUES (:commit_hash, :file_path, :symbol, :kind)
+                        ON CONFLICT (commit_hash, symbol, file_path) DO NOTHING
+                    """),
+                    extracted,
+                )
+                rows_total += len(extracted)
+            else:
+                # No symbols extractable (merge commits, comment-only diffs,
+                # bad-object, etc.) — write a sentinel so the NOT EXISTS
+                # candidate query excludes this hash next batch. Otherwise
+                # the loop would reprocess the same no-diff commits forever
+                # (cost 9.5h / 0 useful rows in our first run).
+                conn.execute(
+                    text("""
+                        INSERT INTO link_commit_symbol
+                            (commit_hash, file_path, symbol, kind)
+                        VALUES (:h, '__NONE__', '__NONE__', 'sentinel')
+                        ON CONFLICT (commit_hash, symbol, file_path) DO NOTHING
+                    """),
+                    {"h": row.hash},
+                )
 
     return (processed, rows_total, skipped)
 

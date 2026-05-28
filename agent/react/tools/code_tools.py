@@ -215,6 +215,7 @@ def _find_commits_touching_symbol(*, symbol: str,
           FROM link_commit_symbol lcs
           JOIN kernel_commit kc ON kc.hash = lcs.commit_hash
          WHERE lcs.symbol = :sym
+           AND lcs.kind != 'sentinel'
            AND kc.commit_date >= :cutoff
            {version_clause}
          ORDER BY substring(lcs.commit_hash, 1, 12), kc.commit_date DESC

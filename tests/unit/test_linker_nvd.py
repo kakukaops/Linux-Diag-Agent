@@ -1,16 +1,29 @@
-"""Regression tests for graph.linker.link_nvd_commits.
+"""Regression tests for graph.linker.
 
-Pre-v2.3 the function had `WHERE ... LIMIT :limit` with default 500 and
-no pagination — it silently processed only the first 500 CVEs and stopped.
-That capped link_commit_cve at 547 rows (out of a 2,870-row upper bound).
-The fix replaced the per-row loop with a single INSERT…SELECT that walks
-all CVE rows. These tests assert the SQL the function executes does not
-re-introduce the LIMIT.
+Three Pre-v2.3 bugs in the linker that this file guards against:
+
+1. **link_nvd_commits**: `WHERE … LIMIT :limit` with default 500 and no
+   pagination — silently processed only the first 500 CVEs and stopped.
+   Capped link_commit_cve at 547 rows (out of 2,870 upper bound).
+
+2. **_link_trailer_to_bug**: same LIMIT-truncation trap, AND queried
+   `bug.id = :extracted_number` when the bugzilla bug number actually
+   lives in `bug.external_id`. Result: 1,717 commits citing
+   bugzilla.kernel.org produced just 1 link.
+
+3. **_link_link_trailer_to_message**: same LIMIT trap (default 1000)
+   for Link: lore.kernel.org trailers. Should walk all candidate commits.
+
+Asserts the SQL each function executes does not re-introduce LIMIT.
 """
 
 from unittest.mock import MagicMock, patch
 
-from graph.linker import link_nvd_commits
+from graph.linker import (
+    link_nvd_commits,
+    _link_trailer_to_bug,
+    _link_link_trailer_to_message,
+)
 
 
 def _capture_executes(conn_mock):
@@ -73,6 +86,67 @@ def test_link_nvd_commits_idempotent_returns_zero():
 
     n = link_nvd_commits(eng)
     assert n == 0
+
+
+def _capture_sql(target_fn, *args, **kw) -> list[str]:
+    """Run target_fn with text() patched and return all SQL strings issued."""
+    produced: list[str] = []
+    def fake_text(s):
+        produced.append(s)
+        t = MagicMock(); t.text = s; return t
+    with patch("graph.linker.text", side_effect=fake_text):
+        target_fn(*args, **kw)
+    return produced
+
+
+def test_link_trailer_to_bug_does_not_truncate():
+    """Regression: pre-v2.3 used `LIMIT :batch_size`, capping bugzilla
+    linking to the first N commits. The fixed function streams all
+    candidates via WHERE body ILIKE '%bugzilla.kernel.org/show_bug%'."""
+    conn = MagicMock()
+    # First execute() builds bug_idx; iterating over it should yield nothing.
+    conn.execute.return_value.__iter__ = MagicMock(return_value=iter([]))
+
+    from graph.linker import LinkReport
+    sqls = _capture_sql(_link_trailer_to_bug, conn, 1000, LinkReport())
+
+    select_bug_idx = [s for s in sqls if "FROM bug WHERE source = 'bugzilla_kernel'" in s]
+    assert select_bug_idx, "must build a (external_id → bug.id) index"
+
+    # No SELECT … LIMIT in the candidate-commit query
+    for s in sqls:
+        if "FROM kernel_commit" in s:
+            assert "LIMIT" not in s.upper(), \
+                f"regression: LIMIT clause re-introduced — {s[:200]}"
+
+
+def test_link_trailer_to_bug_uses_external_id_not_pk():
+    """Regression: pre-v2.3 looked up `bug.id = :extracted_number` instead
+    of `(source, external_id)`. The index-build SQL must select
+    external_id, not just id."""
+    conn = MagicMock()
+    conn.execute.return_value = []
+
+    from graph.linker import LinkReport
+    sqls = _capture_sql(_link_trailer_to_bug, conn, 1000, LinkReport())
+
+    bug_idx_sql = next(s for s in sqls if "FROM bug WHERE source" in s)
+    assert "external_id" in bug_idx_sql, \
+        "bug-id lookup must use external_id (the bugzilla bug number), not just bug.id"
+
+
+def test_link_link_trailer_to_message_does_not_truncate():
+    """Regression: pre-v2.3 LIMIT :batch_size on the lkml message linker too."""
+    conn = MagicMock()
+    conn.execute.return_value = []
+
+    from graph.linker import LinkReport
+    sqls = _capture_sql(_link_link_trailer_to_message, conn, 1000, LinkReport())
+
+    for s in sqls:
+        if "FROM kernel_commit" in s:
+            assert "LIMIT" not in s.upper(), \
+                f"regression: LIMIT clause re-introduced — {s[:200]}"
 
 
 def test_batch_size_under_threshold_logs_warning_but_does_not_truncate(caplog):

@@ -73,45 +73,81 @@ def run_linker(engine: "Engine", *, batch_size: int = 1000) -> LinkReport:
 
 
 def _link_trailer_to_bug(conn: Any, batch_size: int, report: LinkReport) -> None:
-    """Scan kernel_commit.body for Fixes:/Closes: refs that match bug table rows."""
+    """Stream kernel_commit.body for bugzilla.kernel.org / bsc#/BZ-# refs and
+    link to the bug row identified by (source='bugzilla_kernel', external_id).
+
+    Pre-v2.3 this had two bugs:
+      1. WHERE LIMIT :batch_size truncated each invocation to N commits with
+         no checkpoint — so only the first N commits ever got processed
+         (same trap as link_nvd_commits).
+      2. The bug-existence check used `bug.id = :extracted_number`, but
+         `bug.id` is the table's auto-increment PK, not the bugzilla number.
+         The bugzilla number lives in `bug.external_id`. So 1,717 commits
+         citing bugzilla.kernel.org produced just 1 link (the one accidental
+         id-collision).
+    Result: link_commit_bug had ~1 bugzilla-source row instead of ~1.7K.
+
+    Fix follows the link_gitee_atomgit_bugs pattern (which never had this
+    bug): build an in-memory (external_id → bug.id) index, stream all
+    candidate commits with a single SQL query, bulk INSERT in CHUNKs.
+    `batch_size` is retained for API compat but no longer truncates.
+    """
+    bug_idx: dict[str, int] = {
+        r.external_id: r.id
+        for r in conn.execute(text(
+            "SELECT id, external_id FROM bug WHERE source = 'bugzilla_kernel'"
+        ))
+        if r.external_id  # skip NULLs
+    }
+    logger.info("[linker] bugzilla_kernel index size: %d", len(bug_idx))
+    if not bug_idx:
+        return
+
+    # Stream all commits whose body mentions a bugzilla.kernel.org URL or a
+    # short bsc#/BZ-/bz#/bug# trailer. ILIKE for case-insensitive prefix
+    # match — covers 'bugzilla.kernel.org' (URL form) plus the short forms.
     sql = text("""
-        SELECT kc.hash, kc.body
-          FROM kernel_commit kc
-         WHERE kc.body IS NOT NULL
-           AND NOT EXISTS (
-               SELECT 1 FROM link_commit_bug lcb
-                WHERE lcb.commit_hash = kc.hash
-                  AND lcb.source = 'trailer'
-           )
-         LIMIT :limit
+        SELECT hash, body FROM kernel_commit
+         WHERE body IS NOT NULL
+           AND (body ILIKE '%bugzilla.kernel.org/show_bug%'
+                OR body ~* '(bsc#|BZ-|bz#|bug #?)\\d+')
     """)
-    rows = conn.execute(sql, {"limit": batch_size}).fetchall()
+    pairs: list[tuple[str, int, str]] = []   # (commit_hash, bug_pk, link_type)
+    skipped_no_bug = 0
+    # Buffer fully — the WHERE clause limits candidates to ~10K rows max
+    # (1.7K bugzilla URL + ~10K bsc# refs). Server-side cursor would
+    # conflict with executemany on the same connection.
+    for hsh, body in conn.execute(sql).fetchall():
+        for bug_id_str, link_type in _extract_bugzilla_ids(body or ""):
+            bug_pk = bug_idx.get(bug_id_str)
+            if bug_pk is None:
+                skipped_no_bug += 1
+                continue
+            pairs.append((hsh, bug_pk, link_type))
+    # Dedup (commit, bug, link_type) tuples
+    pairs = list({p: None for p in pairs}.keys())
+    logger.info(
+        "[linker] bugzilla commit→bug pairs: %d (skipped %d refs with no matching bug row)",
+        len(pairs), skipped_no_bug,
+    )
+    report.commit_bug_skipped += skipped_no_bug
 
-    for commit_hash, body in rows:
-        bug_ids = _extract_bugzilla_ids(body or "")
-        cve_ids = _CVE_RE.findall(body or "")
-
-        for bug_id_str, link_type in bug_ids:
-            try:
-                bug_id = int(bug_id_str)
-                exists = conn.execute(
-                    text("SELECT 1 FROM bug WHERE id = :id"), {"id": bug_id}
-                ).fetchone()
-                if not exists:
-                    continue
-                conn.execute(
-                    text("""
-                        INSERT INTO link_commit_bug
-                               (commit_hash, bug_id, link_type, confidence, source)
-                        VALUES (:h, :b, :lt, 0.95, 'trailer')
-                        ON CONFLICT ON CONSTRAINT uq_lcb DO NOTHING
-                    """),
-                    {"h": commit_hash, "b": bug_id, "lt": link_type},
-                )
-                report.commit_bug_inserted += 1
-            except Exception as exc:
-                report.errors.append(f"commit {commit_hash} bug {bug_id_str}: {exc}")
-                report.commit_bug_skipped += 1
+    insert_sql = text("""
+        INSERT INTO link_commit_bug
+               (commit_hash, bug_id, link_type, confidence, source)
+        VALUES (:h, :b, :lt, 0.95, 'trailer')
+        ON CONFLICT ON CONSTRAINT uq_lcb DO NOTHING
+    """)
+    CHUNK = 1000
+    batch: list[dict] = []
+    for hsh, pk, lt in pairs:
+        batch.append({"h": hsh, "b": pk, "lt": lt})
+        if len(batch) >= CHUNK:
+            conn.execute(insert_sql, batch)
+            batch.clear()
+    if batch:
+        conn.execute(insert_sql, batch)
+    report.commit_bug_inserted += len(pairs)
 
 
 def _extract_bugzilla_ids(body: str) -> list[tuple[str, str]]:
@@ -128,45 +164,73 @@ def _extract_bugzilla_ids(body: str) -> list[tuple[str, str]]:
 
 
 def _link_link_trailer_to_message(conn: Any, batch_size: int, report: LinkReport) -> None:
-    """Mine Link:/In-reply-to: trailers to create link_commit_message rows."""
-    sql = text("""
-        SELECT kc.hash, kc.body, kc.subject
-          FROM kernel_commit kc
-         WHERE kc.body IS NOT NULL
-           AND NOT EXISTS (
-               SELECT 1 FROM link_commit_message lcm
-                WHERE lcm.commit_hash = kc.hash
-                  AND lcm.match_method IN ('link_trailer', 'subject')
-           )
-         LIMIT :limit
-    """)
-    rows = conn.execute(sql, {"limit": batch_size}).fetchall()
+    """Stream kernel_commit.body for Link: lore.kernel.org trailers and link
+    to lkml_message rows where the message_id is present in our LKML cache.
 
-    for commit_hash, body, subject in rows:
-        body = body or ""
-        # 1. Lore URL → message_id from Link: trailers (strip trailing
-        # punctuation captured by the regex — see ingest/lkml/backfill._clean_msgid)
-        from ingest.lkml.backfill import _clean_msgid  # noqa: PLC0415
-        for m in _LORE_URL_RE.finditer(body):
+    Pre-v2.3 had the same LIMIT-truncation trap as _link_trailer_to_bug —
+    only `batch_size` commits processed per call, no checkpoint, so the
+    function only ever scratched the surface.
+
+    Fix: build an in-memory message_id set (~115K rows, well within memory)
+    and stream all candidate commits. Subject-fuzzy fallback is dropped in
+    bulk path because it does one ILIKE per commit — quadratic at scale
+    and low-confidence anyway. Pure Link: trailer linking is high-precision.
+    """
+    from ingest.lkml.backfill import _clean_msgid  # noqa: PLC0415
+
+    msg_set: set[str] = {r.message_id for r in conn.execute(text(
+        "SELECT message_id FROM lkml_message"
+    ))}
+    logger.info("[linker] lkml_message index size: %d", len(msg_set))
+    if not msg_set:
+        return
+
+    sql = text("""
+        SELECT hash, body FROM kernel_commit
+         WHERE body IS NOT NULL
+           AND body ILIKE '%lore.kernel.org%'
+    """)
+    pairs: list[tuple[str, str]] = []   # (commit_hash, msg_id)
+    skipped_msgid_not_in_cache = 0
+    # Buffer rather than stream — only ~40K commits cite lore.kernel.org,
+    # well within memory. Server-side cursor conflicts with executemany
+    # on the same SQLAlchemy connection.
+    for hsh, body in conn.execute(sql).fetchall():
+        seen_for_this_commit: set[str] = set()
+        for m in _LORE_URL_RE.finditer(body or ""):
             msg_id = _clean_msgid(m.group(1))
             if not msg_id or "@" not in msg_id:
                 continue
-            _upsert_commit_message_link(conn, commit_hash, msg_id, "link_trailer", report)
+            if msg_id not in msg_set:
+                skipped_msgid_not_in_cache += 1
+                continue
+            if msg_id in seen_for_this_commit:
+                continue
+            seen_for_this_commit.add(msg_id)
+            pairs.append((hsh, msg_id))
+    # Dedup global
+    pairs = list({p: None for p in pairs}.keys())
+    logger.info(
+        "[linker] commit→message pairs: %d (skipped %d refs whose msg-id is not in lkml_message cache)",
+        len(pairs), skipped_msgid_not_in_cache,
+    )
 
-        # 2. Subject match fallback — search lkml_message by cleaned subject
-        if subject:
-            clean_subject = _SUBJECT_CLEAN_RE.sub("", subject).strip()
-            if clean_subject:
-                row = conn.execute(
-                    text("""
-                        SELECT message_id FROM lkml_message
-                         WHERE subject ILIKE :s
-                         LIMIT 1
-                    """),
-                    {"s": f"%{clean_subject[:80]}%"},
-                ).fetchone()
-                if row:
-                    _upsert_commit_message_link(conn, commit_hash, row[0], "subject", report)
+    insert_sql = text("""
+        INSERT INTO link_commit_message
+               (commit_hash, message_id, link_type, match_method, confidence)
+        VALUES (:h, :mid, 'link_trailer', 'link_trailer', 0.9)
+        ON CONFLICT ON CONSTRAINT uq_lcm DO NOTHING
+    """)
+    CHUNK = 1000
+    batch: list[dict] = []
+    for hsh, mid in pairs:
+        batch.append({"h": hsh, "mid": mid})
+        if len(batch) >= CHUNK:
+            conn.execute(insert_sql, batch)
+            batch.clear()
+    if batch:
+        conn.execute(insert_sql, batch)
+    report.commit_message_inserted += len(pairs)
 
 
 def _upsert_commit_message_link(

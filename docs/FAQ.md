@@ -2,6 +2,213 @@
 
 ---
 
+## Q15：知识图谱部分的工作是否完成？结构和数据规模？举一个故障问答说明 KG 如何与 LLM 交互？
+
+> 时间点：2026-05-28，v2.3 KG 攻关期末尾，Run 10 评测出炉
+> （grounded+correct 从 0 → 50%，超额完成 v2.4 KPI 目标 25%）。
+
+### 一、KG 工作完成度
+
+| 维度 | 状态 |
+|---|---|
+| **结构**（schema + 边类型） | ✅ 完成（11 migrations）|
+| **数据保真度验证** | ✅ 完成（`scripts/kg_invariants.py` 19 项 + `scripts/kg_audit.py` 7 项）|
+| **关键缺失边补齐** | ✅ 完成（symbol / signature / fault_domain / author）|
+| **历史污染清理** | ✅ 完成（366K subsystem 污染 + 2.8K URL 残留 + 33 short SHA）|
+| **Linker bug 清剿** | ✅ 完成（4 个 LIMIT 陷阱全修，链表合计补回 ~23K 边）|
+| **历史 < 2024 commit backfill** | ⏸️ 推迟到 v2.4（12 h backfill 单独跑）|
+| **subsystem NULL 行回填** | ⏸️ 推迟到 v2.4（26 h backfill 单独跑）|
+
+### 二、当前 KG 结构与数据规模（2026-05-28）
+
+```
+┌─ NODE TABLES (10 张实体) ────────────────────────────────────┐
+│  kernel_commit               1,545,784  （含 17,575 stubs）   │
+│  lkml_message                  115,001  （ 6,617 with sig）   │
+│  lkml_thread                   110,163                        │
+│  lkml_patch                     57,706                        │
+│  lkml_review                   206,680                        │
+│  bug                             8,028  （   302 with sig）   │
+│  cve                            15,502                        │
+│  syzbot_crash                      999  （   all with sig）   │
+│  dmesg_event                         0  （新建，等用户输入）  │
+│  fault_taxonomy                     11  （seed 11 个 domain） │
+└──────────────────────────────────────────────────────────────┘
+┌─ EDGE TABLES (8 张关系) ─────────────────────────────────────┐
+│  link_commit_fixes              118,276  ← 补丁谱系 Fixes:    │
+│  link_commit_symbol             109,972  ← 符号→commit v2.3   │
+│  link_commit_bug                 58,634  ← commit↔gitee/BZ    │
+│  link_commit_message             38,211  ← commit↔LKML thread │
+│  link_author_subsystem           36,287  ← 维护者权威度 v2.3  │
+│  link_commit_fault_domain        16,424  ← 故障域标签 v2.3    │
+│  link_commit_revert               5,490  ← Revert 链          │
+│  link_commit_cve                  2,864  ← commit↔CVE         │
+└──────────────────────────────────────────────────────────────┘
+合计 cross-graph 真实边: ~386K
+```
+
+### 三、实战例子：一次 OOM 故障问答完整数据流
+
+**用户输入**：
+
+```
+OLK-6.6: process java OOM killed inside memcg foo,
+anon-rss=2.0G of memory.high=2.0G, killer=oom_kill_process,
+no swap configured. Why?
+```
+
+#### 阶段 A — Triage（确定性，无 LLM）
+
+```
+parse_input              → input_type='question', raw_input=above
+extract_events           → kernel_events=[{kind:'oom', comm:'java', ...}]
+classify_fault_and_route → fault_kind='oom', diagnostic_route='kernel'
+retrieve (7-route BM25)  → state.evidence 填充 ~10 行候选证据
+```
+
+`retrieve` 阶段从 KG 拉的数据（举例）：
+
+```sql
+-- 命中 link_commit_fault_domain.domain='oom' 同时 BM25 命中"memcg/memory.high"
+SELECT kc.hash, kc.subject, kc.body
+  FROM kernel_commit kc
+  JOIN link_commit_fault_domain lcfd ON lcfd.commit_hash = kc.hash
+ WHERE lcfd.domain = 'oom'
+   AND kc.body_tsv @@ to_tsquery('english', 'memcg & memory.high')
+ ORDER BY ts_rank_cd(kc.body_tsv, ...) DESC LIMIT 10;
+
+-- 返回:
+-- 892962a26026  "memcontrol: don't throttle dying tasks on memory.high"
+-- f9c645621a28  "memcg, oom: don't require __GFP_FS"
+-- ... 8 more
+```
+
+这 10 行 Evidence 进入 `state["evidence"]`，再以纯文本形式拼到 user_prompt 里给
+ReAct LLM。
+
+#### 阶段 B — ReAct Loop（LLM 工具调用）
+
+LLM 看到症状自主决定调以下工具，**每个工具都是 KG 查询的封装**：
+
+| LLM 调用 | KG 后端 SQL（简化） | 返回给 LLM 的文本 |
+|---|---|---|
+| `find_similar_crashes(trace)` | `SELECT * FROM syzbot_crash JOIN bug JOIN lkml_message WHERE stack_signature = :sig` | `"stack_signature: abc123… (no matching past reports — new)"` 或具体 3 个匹配 |
+| `search_commits("memcg memory.high")` | `SELECT … FROM kernel_commit WHERE body_tsv @@ to_tsquery(...)` | 10 行 commit hash + subject |
+| `find_commits_touching_symbol("oom_kill_process")` | `SELECT lcs.commit_hash, kc.subject FROM link_commit_symbol lcs JOIN kernel_commit kc WHERE lcs.symbol='oom_kill_process'` | `"8 commits touching oom_kill_process since 2023..."` |
+| `get_commit_detail("892962a26026")` | `SELECT subject, body, fixes_refs, affected_versions, upstream_commit FROM kernel_commit WHERE hash=...` | 完整 commit 内容（body + trailers + 版本信息）|
+| `check_backport_status("892962a26026", "OLK-6.6")` | `SELECT affected_versions, olk_inclusion_type FROM kernel_commit WHERE upstream_commit = :sha OR hash = :sha` | `"present in OLK-6.6 backport (commit 8615d2e1fb7d, stable type)"` |
+| `get_regression_fixes("892962a26026")` | `SELECT * FROM link_commit_fixes WHERE fixed_hash = :sha UNION SELECT * FROM link_commit_revert WHERE reverted_hash = :sha` | `"no known regressions; not reverted"` |
+| `browse_subsystem_fixes("mm,memcg", contains="oom")` | `SELECT … FROM kernel_commit WHERE subject ILIKE 'mm:%fix%oom%' OR 'memcg:%'` | `"Recent fix commits in mm/memcg containing 'oom'..."` |
+| `search_lkml("memory.high throttle dying")` | `SELECT … FROM lkml_message WHERE body_tsv @@ to_tsquery(...)` | LKML 邮件命中 |
+
+**每个工具的文本输出 → 作为新 message 喂回 LLM 上下文**，下一轮 LLM 看着这些
+证据决定继续问什么 / 还是出答案。
+
+#### 阶段 C — v2.3 关键步骤：tool 输出汇入 state.evidence
+
+`agent/react/loop.py` 里所有工具返回字符串后，**正则提取 commit hash**，在
+`agent/react/nodes.py` 把这些 hash 批量到 `kernel_commit` 查 subject + body，
+作为新 evidence 行**前置**插入 `state["evidence"]`。这一步是让 ReAct 找到
+的东西能进入下游 bind_claims 的关键。
+
+#### 阶段 D — bind_claims（Path C 兜底）
+
+LLM 给出 `<final_answer>` 后：
+
+```python
+analysis = state["final_analysis"]
+evidence_pool = state["evidence"]  # 含 triage-BM25 + ReAct-harvest 共 ~50 行
+
+# LLM 二次调用：从 analysis 文本中抽出 claims，每条 claim 必须引用 pool 里的 ID
+prompt = f"""
+Analysis: {analysis}
+
+Retrieved evidence pool (cite ONLY from this list):
+  - 892962a26026: memcontrol: don't throttle dying tasks on memory.high
+  - f9c645621a28: memcg, oom: don't require __GFP_FS
+  - ...
+
+Extract factual claims from the Analysis and cite the SINGLE most-supporting
+evidence ID for each. Return JSON array only.
+"""
+
+claims = [
+  {"text": "OOM in memcg foo caused by memcontrol throttling dying tasks",
+   "evidence_refs": ["892962a26026"]},
+]
+
+# 每条 claim 做 token-overlap 校验：claim 文本 vs evidence body 至少
+# 20% 显著 token 重合
+# 兜底：如果 LLM 引错了，扫整个池子找最佳 overlap，自动挂 AUTO:<id>
+
+# verified=True → 报告标 ✓ GROUNDED
+# 否则 → 标 ⚠ SPECULATIVE，写入"agent 猜测，无可靠证据"区
+```
+
+#### 阶段 E — generate_report
+
+```markdown
+# Linux Kernel Fault Diagnosis Report
+
+**Diagnosis quality:** ✓ GROUNDED — supporting claims trace to retrieved evidence.
+
+## Root Cause Analysis
+[LLM final_analysis]
+
+## ✓ Verified Claims (grounded in evidence)
+- OOM in memcg foo caused by memcontrol throttling dying tasks
+  _(refs: 892962a26026; evidence-overlap: 0.78)_
+
+## Fix Recommendation
+Backport commit 892962a26026 to OLK-6.6 (present in 6.6; missing from 5.10).
+
+## Evidence trace
+- search_commits returned 892962a26026 on call #3 (subject match: "memcontrol:
+  don't throttle dying tasks on memory.high")
+- find_commits_touching_symbol surfaced same hash via memcg_oom_kill_process
+- check_backport_status confirmed OLK-6.6 inclusion
+```
+
+### 四、LLM 与 KG 的交互模型
+
+```
+                  ┌──────────────────────────┐
+   USER INPUT ──→ │  Triage (deterministic)  │ ──→ state.evidence (BM25)
+                  └──────────────────────────┘            ↓
+                                                          ↓
+                  ┌──────────────────────────┐            ↓
+                  │   ReAct Loop (LLM)       │←─ tool ────┘
+                  │                          │   schemas
+                  │  thinks → calls tool ────│──→ KG SQL query
+                  │       ↑                  │     ↓
+                  │       └── tool result ←──│── text response (commit IDs, subjects)
+                  │                          │     ↓
+                  │  (harvest hashes →)──────│──→ state.evidence (augmented)
+                  │       repeat until                │
+                  │       <final_answer>              │
+                  └──────────────────────────┘        │
+                                                      ↓
+                  ┌──────────────────────────┐        │
+                  │  bind_claims (Path C)    │←───────┘
+                  │  LLM抽claim → 校对evidence│
+                  │  →verified or speculative│
+                  └──────────────────────────┘
+                              ↓
+                  ┌──────────────────────────┐
+                  │  generate_report (det.)  │ ──→ Markdown + JSON
+                  └──────────────────────────┘
+```
+
+**LLM 永远不直接查 KG**。所有 KG 访问都通过 tool 描述 + 参数 schema 让 LLM
+自主调用 → 后端 Python 把 KG 查询结果**渲染成文本**送回 LLM。这保证：
+
+1. LLM 看到的永远是确定性数据（不会幻觉 commit hash）
+2. 每条 claim 都能溯源到具体哪个工具调用、哪行 SQL 结果
+3. 在 bind_claims 阶段可以用程序化的 token overlap 检查 claim 与证据的对应
+   关系
+
+---
+
 ## Q14：能不能用 sourcebot-dev/sourcebot 替代 CodeGraph？
 
 **结论：不能。三个关键阻碍。**

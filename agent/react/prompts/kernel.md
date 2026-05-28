@@ -10,17 +10,52 @@ Investigate the kernel fault described below and produce a definitive root-cause
 - Diagnostic route: kernel
 
 ## Investigation Strategy
-1. If raw dmesg is provided, call `parse_dmesg` first to extract structured events; use `extract_call_trace` to isolate the crash site. **Then call `find_similar_crashes(trace_text=<the call trace>)` BEFORE doing any BM25 search** — if the signature matches a past syzbot/bug/LKML report, you can pivot straight to the existing analysis and skip the searching phase entirely. This is the experienced-engineer "have I seen this before?" reflex.
-2. For each function in the call trace, use `search_code` to locate the source, `get_function_source` to inspect the implementation.
-3. Search for historical fixes: `search_commits` with symptom keywords → `get_commit_detail` → `check_backport_status` to confirm if the fix is in this kernel.
-   - **If `search_commits` with the crash-site symbol returns nothing useful, use the v2.3 vocab-gap protocol — three escalating escape routes:**
-     1. **`find_commits_touching_symbol(symbol='ext4_writepages')`** — KG-edge reverse lookup, highest precision. Returns commits that actually changed this function's source. Use FIRST whenever you have a concrete symbol from the trace.
-     2. **`browse_subsystem_fixes(subsystem_prefixes='net,tcp,ipv4', contains='crash')`** — scan recent fix subjects in the relevant subsystem. Equivalent to `git log --oneline --grep=fix net/`. Use when subsystem is clear but the exact symbol isn't.
-     3. **`expand_query_from_symbol(symbol='tcp_send_mss')`** — read the function source and surface neighbor identifiers (struct fields, callees, locals). Then retry the above two with the returned vocabulary.
-   - Chain them: expand_query → find_commits_touching_symbol on each neighbor → browse_subsystem_fixes as fallback.
-4. Cross-reference with `search_syzbot` and `search_bugs` for known crash patterns matching the call trace or panic type.
-5. Before recommending a backport, always call `get_regression_fixes` to verify the fix does not itself introduce a regression.
-6. Use `search_lkml` to find patch discussion threads for additional context on known-tricky fixes.
+
+### Phase 0 — Same-stack lookup (cheapest, do first)
+1. If raw dmesg is provided, call `parse_dmesg` first to extract structured events; use `extract_call_trace` to isolate the crash site. **Then call `find_similar_crashes(trace_text=<the call trace>)` BEFORE any BM25 search.** If the signature matches a past syzbot/bug/LKML report, pivot straight to the existing analysis. This is the experienced-engineer "have I seen this before?" reflex.
+
+### Phase 1 — Symbol-side reverse lookup (BEFORE keyword search)
+**For EVERY function name in the call trace (not just the top frame), call:**
+
+```
+find_commits_touching_symbol(symbol=<frame_name>, kernel_version=<OLK-X.Y>)
+```
+
+This is the KG-edge reverse lookup. Even if the top frame is `tcp_send_mss`, also query frames below it (`tcp_sendmsg_locked`, `skb_put`, …) and frames above it. Don't anchor on one symbol.
+
+**Rule of three**: if you've called any single `find_commits_touching_symbol(symbol=X)` or `search_code(query=X-related)` 3 times with no new evidence, you are **forbidden** from calling it a 4th time on the same symbol. Move to:
+
+- `get_call_graph(func_name=X, direction='callers')` — what calls X?
+- `expand_query_from_symbol(symbol=X)` — what identifiers does X's source touch?
+- `find_commits_touching_symbol` on EACH callee/caller/struct-field that surfaces.
+
+### Phase 2 — BM25 with symptom + concept keywords
+`search_commits` with **multiple alternative phrasings** of the symptom. Don't just paste the dmesg verbatim — also try:
+- root-cause language ("buffer overflow", "use-after-free")
+- subsystem terminology from the function source you read in Phase 1
+- error class abstractions ("out-of-bounds write", "NULL deref in writeback")
+
+### Phase 3 — Subsystem browsing (when 1 and 2 didn't find it)
+`browse_subsystem_fixes(subsystem_prefixes='net,tcp,ipv4', contains=<NARROW token>)`.
+
+**Use BROAD `contains` first** ("crash", "fix", "panic", "leak") before narrow ones. A `contains` like `"KASAN out-of-bounds skb_put gso"` (4 words) almost always over-filters. Start with one word; widen the prefix list if results are sparse.
+
+After getting the list back, **read each subject** and pick the 1-3 that are semantically most relevant. Don't trust BM25 ranking alone — the LLM (you) is the semantic filter.
+
+### Phase 4 — Verify candidates
+For each candidate fix commit:
+- `get_commit_detail(hash)` — read the full body
+- `get_commit_diff(hash)` — look at the actual code change
+- `find_syzbot_fixed_by_commit(hash)` — does it fix any real syzbot bug? (strong corroboration)
+- `check_backport_status(upstream_sha, olk_version)` — confirm it's in / missing from this kernel
+- `get_regression_fixes(hash)` — verify the fix wasn't itself reverted
+
+### Anti-patterns (your Run-11 audit caught these — don't repeat)
+
+- **Anchoring on the top trace frame**: in kasan-001 the agent called `tcp_v4_do_rcv`-related searches **8 times** while the real fix touched `tcp_conn_request` — one level up. Walk the WHOLE trace.
+- **Narrow `contains` over-filter**: in kasan-002 `contains="KASAN out-of-bounds skb_put gso"` returned 0 hits while `contains="crash"` would have found `net: fix crash when config small gso_max_size`.
+- **Repeating the same query**: querying the same symbol 4+ times with no new evidence is a sign you need to PIVOT (different symbol, different tool category).
+- **Wrong subsystem direction**: in oom-002 the agent walked `__alloc_pages_slowpath` but the GT was deeper in the buddy allocator (`free_pcppages_bulk`, `__rmqueue_smallest`). When stuck, walk DOWN (callees) not just UP (callers).
 
 ## Tool Priority
 - Start with evidence you have (dmesg, call trace) before fetching more.

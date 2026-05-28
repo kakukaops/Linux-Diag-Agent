@@ -51,34 +51,65 @@ class SyzbotScraper:
             headers={"User-Agent": "linux-diag-agent/1.0"},
         )
 
+    # Pre-v2.3 only scraped /upstream (open ≈ 1.3K crashes), missing
+    # /upstream/fixed (≈ 5.8K, each carrying a Fix: commit — the most
+    # valuable data) and /upstream/invalid (≈ 3.4K dups/non-bugs).
+    # v2.3 walks all three dashboards.
+    _DASHBOARDS = [
+        ("/upstream",          "open"),
+        ("/upstream/fixed",    "fixed"),
+        ("/upstream/invalid",  "invalid"),
+    ]
+
     def list_crashes(self) -> list[dict[str, str]]:
-        """Fetch the upstream crash list. Returns list of {id, title, status}."""
-        html = self._get(f"{_BASE}/upstream")
-        soup = BeautifulSoup(html, "html.parser")
-        # Pick the largest list_table — that's the crash table (manager table is smaller)
-        tables = soup.select("table.list_table")
-        if not tables:
-            return []
-        crash_table = max(tables, key=lambda t: len(t.find_all("tr")))
-        crashes = []
-        for row in crash_table.find_all("tr"):
-            cols = row.find_all("td")
-            if not cols:
+        """Fetch crashes from all upstream dashboards (open / fixed / invalid).
+
+        Returns list of {id, title, status, dashboard} sorted with the most
+        valuable ones first: fixed > open > invalid. The fixed dashboard
+        carries the `Fix:` commit hash that lets us build link_commit_cve-
+        like edges between syzbot bugs and the patches that closed them.
+        """
+        out: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for path, dashboard_status in self._DASHBOARDS:
+            try:
+                html = self._get(f"{_BASE}{path}")
+            except Exception as exc:
+                logger.warning("[syzbot] list fetch failed %s: %s", path, exc)
                 continue
-            link = cols[0].find("a")
-            if not link:
+            soup = BeautifulSoup(html, "html.parser")
+            tables = soup.select("table.list_table")
+            if not tables:
                 continue
-            href = link.get("href", "")
-            # URL format: /bug?extid=<id>
-            crash_id = href.split("extid=")[-1] if "extid=" in href else ""
-            if not crash_id:
-                continue
-            crashes.append({
-                "id": crash_id,
-                "title": link.get_text(strip=True),
-                "status": cols[-1].get_text(strip=True) if len(cols) > 1 else "open",
-            })
-        return crashes
+            crash_table = max(tables, key=lambda t: len(t.find_all("tr")))
+            for row in crash_table.find_all("tr"):
+                cols = row.find_all("td")
+                if not cols:
+                    continue
+                link = cols[0].find("a")
+                if not link:
+                    continue
+                href = link.get("href", "")
+                crash_id = href.split("extid=")[-1] if "extid=" in href else ""
+                if not crash_id or crash_id in seen:
+                    continue
+                seen.add(crash_id)
+                # Per-row status from the last cell is more accurate than
+                # the dashboard's bulk label (e.g. an /upstream row can be
+                # "moderation" or "biz"). Fall back to dashboard status.
+                row_status = (cols[-1].get_text(strip=True)
+                               if len(cols) > 1 else dashboard_status)
+                out.append({
+                    "id": crash_id,
+                    "title": link.get_text(strip=True),
+                    "status": row_status or dashboard_status,
+                    "dashboard": dashboard_status,
+                })
+        # Prioritise fixed first (most useful — has Fix: commits), then open,
+        # then invalid.
+        priority = {"fixed": 0, "open": 1, "invalid": 2}
+        out.sort(key=lambda c: priority.get(c["dashboard"], 9))
+        return out
 
     def fetch_crash_detail(self, crash_id: str) -> SyzbotCrash | None:
         try:

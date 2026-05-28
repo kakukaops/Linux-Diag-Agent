@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 class SyzbotIngester(BaseIngester):
     source_name = "syzbot"
 
+    # Pre-v2.3 had `new_ids[:200]` hard cap per run + scraped only
+    # /upstream. Combined effect: 999 rows ingested out of ~10.5K
+    # available on syzbot dashboards. v2.3 removes the cap and walks
+    # all three dashboards.
+    _MAX_PER_RUN = 2000   # courtesy cap so a single run doesn't hammer
+                          # syzbot for 4 h straight at 1.5s/req; weekly
+                          # cron + idempotent NOT EXISTS picks up the rest
+
     def incremental(
         self,
         checkpoint: dict[str, Any],
@@ -32,10 +40,25 @@ class SyzbotIngester(BaseIngester):
             logger.error("[syzbot] list fetch failed: %s", exc)
             return checkpoint
 
-        new_ids = [c["id"] for c in crashes if c["id"] not in seen_ids]
-        logger.info("[syzbot] %d new crashes to process", len(new_ids))
+        # Skip crashes we've seen UNLESS their dashboard says "fixed":
+        # transitioning from open → fixed must be re-fetched to capture
+        # the Fix: commit hash that just appeared.
+        new_ids: list[tuple[str, str]] = []
+        for c in crashes:
+            cid = c["id"]
+            if cid in seen_ids and c.get("dashboard") != "fixed":
+                continue
+            new_ids.append((cid, c.get("dashboard", "open")))
 
-        for crash_id in new_ids[:200]:  # cap per run
+        # Fixed-dashboard crashes come first (per scraper sort), and they
+        # carry the most valuable data (Fix: commit).
+        n_fixed = sum(1 for _, d in new_ids if d == "fixed")
+        logger.info(
+            "[syzbot] %d candidate crashes (fixed=%d, open/invalid=%d)",
+            len(new_ids), n_fixed, len(new_ids) - n_fixed,
+        )
+
+        for crash_id, _ in new_ids[: self._MAX_PER_RUN]:
             detail = scraper.fetch_crash_detail(crash_id)
             if not detail:
                 quarantine.put(crash_id, {}, "detail fetch failed")

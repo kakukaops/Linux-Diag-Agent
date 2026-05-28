@@ -24,7 +24,7 @@ def test_build_registry_has_all_categories():
     assert {"get_commit_detail", "get_commit_diff", "check_backport_status",
             "get_regression_fixes", "get_function_source", "get_call_graph",
             "expand_query_from_symbol", "browse_subsystem_fixes",
-            "find_commits_touching_symbol"} <= names
+            "find_commits_touching_symbol", "find_similar_crashes"} <= names
     # Category B
     assert {"parse_dmesg", "parse_sosreport", "extract_call_trace"} <= names
 
@@ -220,6 +220,32 @@ def test_find_commits_touching_symbol_empty():
         conn.execute.return_value.fetchall.return_value = []
         result = _find_commits_touching_symbol(symbol="nonexistent_sym_xyz")
     assert "no commits" in result.lower()
+
+
+def test_find_similar_crashes_rejects_empty_input():
+    from agent.react.tools.code_tools import _find_similar_crashes
+    assert "required" in _find_similar_crashes(trace_text="").lower()
+
+
+def test_find_similar_crashes_returns_signature_and_matches():
+    """Stable signature is computed and queries fire against all 4 sources."""
+    from agent.react.tools.code_tools import _find_similar_crashes
+    trace = (
+        "Call Trace:\n"
+        " kmalloc_trace+0x123/0x200\n"
+        " skb_put+0x4a/0x90\n"
+        " tcp_send_mss+0x12a/0x1f0\n"
+        " tcp_sendmsg_locked+0x6b3/0xf30\n"
+    )
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        conn = mock_eng.return_value.connect.return_value.__enter__.return_value
+        # Each subsequent execute() call returns an empty fetchall.
+        conn.execute.return_value.fetchall.return_value = []
+        result = _find_similar_crashes(trace_text=trace)
+    assert "stack_signature:" in result
+    # 4 SELECTs (syzbot, bug, lkml, dmesg) should have fired
+    assert conn.execute.call_count == 4
+    assert "no matching past reports" in result.lower()
 
 
 def test_find_commits_touching_symbol_rejects_empty():

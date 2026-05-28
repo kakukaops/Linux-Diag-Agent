@@ -181,6 +181,85 @@ def _expand_query_from_symbol(*, symbol: str,
     return "\n".join(lines)
 
 
+def _find_similar_crashes(*, trace_text: str, limit: int = 10,
+                          **_: object) -> str:
+    """Hash an incoming kernel call-trace and look up matching past reports
+    across syzbot_crash / bug / lkml_message / dmesg_event.
+
+    This is the v2.3 KG gap #2 closure: previously the agent had no way
+    to ask "have we seen this exact stack before?" An experienced
+    engineer immediately recognises a recurring crash pattern; this
+    tool gives the LLM the same affordance.
+    """
+    from sqlalchemy import text
+    from storage.pg.engine import get_engine
+    from kg.signature import extract_trace_from_text, stack_signature
+
+    if not trace_text or not trace_text.strip():
+        return "error: trace_text is required"
+
+    # If caller passed a trace block directly, use it; otherwise try to
+    # extract one from free-form text first.
+    block = extract_trace_from_text(trace_text) or trace_text
+    sig = stack_signature(block)
+    if not sig:
+        return "error: could not compute stack_signature (empty trace?)"
+
+    cap = min(max(limit, 3), 25)
+    rows: list[str] = [
+        f"stack_signature: {sig}",
+        f"(matching against syzbot / bug / lkml_message / dmesg_event…)",
+    ]
+    try:
+        with get_engine().connect() as conn:
+            sz = conn.execute(text("""
+                SELECT syzbot_id, title, status, fix_commit
+                  FROM syzbot_crash
+                 WHERE stack_signature = :s
+                 LIMIT :n
+            """), {"s": sig, "n": cap}).fetchall()
+            for r in sz:
+                rows.append(f"  syzbot {r.syzbot_id}  [{r.status or '?'}]  "
+                            f"{(r.title or '')[:90]}"
+                            + (f"  fix={r.fix_commit[:12]}" if r.fix_commit else ""))
+
+            bg = conn.execute(text("""
+                SELECT id, source, external_id, title
+                  FROM bug
+                 WHERE stack_signature = :s
+                 LIMIT :n
+            """), {"s": sig, "n": cap}).fetchall()
+            for r in bg:
+                rows.append(f"  bug {r.source}#{r.external_id}  "
+                            f"{(r.title or '')[:90]}")
+
+            lkml = conn.execute(text("""
+                SELECT message_id, subject FROM lkml_message
+                 WHERE stack_signature = :s
+                 LIMIT :n
+            """), {"s": sig, "n": cap}).fetchall()
+            for r in lkml:
+                rows.append(f"  lkml {r.message_id[:40]}  "
+                            f"{(r.subject or '')[:80]}")
+
+            dm = conn.execute(text("""
+                SELECT event_id, source, fault_kind, ingested_at
+                  FROM dmesg_event
+                 WHERE stack_signature = :s
+                 LIMIT :n
+            """), {"s": sig, "n": cap}).fetchall()
+            for r in dm:
+                rows.append(f"  dmesg {r.event_id[:12]} [{r.source}] "
+                            f"{r.fault_kind or '?'}  "
+                            f"{r.ingested_at.strftime('%Y-%m-%d') if r.ingested_at else '?'}")
+    except Exception as exc:
+        return f"DB error: {exc}"
+
+    if len(rows) == 2:
+        rows.append("  (no matching past reports — this signature is new)")
+    return "\n".join(rows)
+
+
 def _find_commits_touching_symbol(*, symbol: str,
                                   kernel_version: str | None = None,
                                   since_months: int = 36,
@@ -620,9 +699,39 @@ FIND_COMMITS_TOUCHING_SYMBOL = Tool(
     routes=_K,
 )
 
+FIND_SIMILAR_CRASHES = Tool(
+    name="find_similar_crashes",
+    description=(
+        "Hash an incoming kernel call-trace and find matching past "
+        "reports across syzbot_crash / bug / lkml_message / dmesg_event. "
+        "Use FIRST when you see a kernel oops/panic — if this signature "
+        "matches a known syzbot crash or an old LKML thread, you can "
+        "skip BM25 searching and pivot directly to the existing "
+        "discussion / fix commit. The signature normalizes out "
+        "addresses, line numbers, and PIDs so the same bug from "
+        "different builds collapses to one hash."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "trace_text": {"type": "string",
+                            "description": "Raw call-trace text (with or "
+                                           "without surrounding prose). The "
+                                           "tool will extract the trace "
+                                           "block before hashing."},
+            "limit": {"type": "integer", "default": 10,
+                       "description": "Max matches per source table (3-25)"},
+        },
+        "required": ["trace_text"],
+    },
+    fn=_find_similar_crashes,
+    routes=_K,
+)
+
 ALL_CODE_TOOLS = [
     GET_COMMIT_DETAIL, GET_COMMIT_DIFF, CHECK_BACKPORT_STATUS,
     GET_REGRESSION_FIXES, GET_FUNCTION_SOURCE, GET_CALL_GRAPH,
     EXPAND_QUERY_FROM_SYMBOL, BROWSE_SUBSYSTEM_FIXES,
-    FIND_COMMITS_TOUCHING_SYMBOL, GET_DEVICE_MAJOR_MAPPING,
+    FIND_COMMITS_TOUCHING_SYMBOL, FIND_SIMILAR_CRASHES,
+    GET_DEVICE_MAJOR_MAPPING,
 ]

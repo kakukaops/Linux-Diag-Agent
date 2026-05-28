@@ -10,7 +10,7 @@ Investigate the kernel fault described below and produce a definitive root-cause
 - Diagnostic route: kernel
 
 ## Investigation Strategy
-1. If raw dmesg is provided, call `parse_dmesg` first to extract structured events; use `extract_call_trace` to isolate the crash site.
+1. If raw dmesg is provided, call `parse_dmesg` first to extract structured events; use `extract_call_trace` to isolate the crash site. **Then call `find_similar_crashes(trace_text=<the call trace>)` BEFORE doing any BM25 search** — if the signature matches a past syzbot/bug/LKML report, you can pivot straight to the existing analysis and skip the searching phase entirely. This is the experienced-engineer "have I seen this before?" reflex.
 2. For each function in the call trace, use `search_code` to locate the source, `get_function_source` to inspect the implementation.
 3. Search for historical fixes: `search_commits` with symptom keywords → `get_commit_detail` → `check_backport_status` to confirm if the fix is in this kernel.
    - **If `search_commits` with the crash-site symbol returns nothing useful, use the v2.3 vocab-gap protocol — three escalating escape routes:**

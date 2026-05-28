@@ -19,7 +19,11 @@
 | **历史 < 2024 commit backfill** | ⏸️ 推迟到 v2.4（12 h backfill 单独跑）|
 | **subsystem NULL 行回填** | ⏸️ 推迟到 v2.4（26 h backfill 单独跑）|
 
-### 二、当前 KG 结构与数据规模（2026-05-28）
+### 二、当前 KG 结构与数据规模（2026-05-28，PG 层）
+
+> 注：本系统实际有**两个独立的 KG 层** — 下面表格是 PostgreSQL 层，承载
+> commit/bug/CVE/LKML 实体与关系；另一层 CodeGraph 承载内核源码与符号图，
+> 见本问下文 §三。
 
 ```
 ┌─ NODE TABLES (10 张实体) ────────────────────────────────────┐
@@ -47,7 +51,77 @@
 合计 cross-graph 真实边: ~386K
 ```
 
-### 三、实战例子：一次 OOM 故障问答完整数据流
+### 三、另一 KG 层：CodeGraph（代码符号图）
+
+Q15 §三 的 OOM 例子里 LLM 用到的工具都走 PG 层。但 agent 实际接入的还有
+另一套 KG —— **CodeGraph**：
+
+| KG 层 | 后端 | 内容 | 服务方式 |
+|---|---|---|---|
+| **PG KG**（上面 §二） | PostgreSQL（18 张表） | commit / bug / CVE / LKML / 关系边 | 直接 SQL，本进程内 |
+| **CodeGraph** | 外部 MCP 服务（`http://localhost:8080/mcp`） | OLK 内核源码 BM25 索引（Zoekt）+ 符号图（SCIP） | HTTP / SSE 调用 |
+
+CodeGraph 通过 4 个 ReAct 工具接入 agent（`agent/react/tools/code_tools.py`
++ `agent/react/tools/retrieval_tools.py`）：
+
+| 工具 | 后端调用 | 用途 |
+|---|---|---|
+| `search_code(query)` | Zoekt BM25 | 关键词搜内核源码（找哪些文件含某模式）|
+| `get_function_source(func_name)` | SCIP `lookup_symbol(definition)` | 拉某函数的实现源码 |
+| `lookup_symbol(name, action)` | SCIP `lookup_symbol(references / implementations)` | 找符号的引用 / 实现 |
+| `get_call_graph(func_name, direction)` | SCIP page_index | 上下游调用链 |
+
+#### 为什么 OOM 例子里 CodeGraph 没出现？
+
+OOM 是**策略 / 配置层故障**：症状是 memcg limit、anon-rss、oom_score、swap
+配置；解决路径是找 commit 是否修过 memcg accounting 或 dying-task throttle。
+**agent 几乎不需要直接读内核源码**，所以 OOM 例子里只走 PG 层就够了。
+
+#### 反例：kasan-002（TCP MSS skb 越界）— CodeGraph 主场
+
+从 Run 10 实测 `react_tools_used`（11 个工具）拆出来：
+
+```
+extract_call_trace, parse_dmesg
+get_function_source         ← CodeGraph: 读 tcp_send_mss 源码
+lookup_symbol               ← CodeGraph: 找 skb_put 引用
+expand_query_from_symbol    ← CodeGraph: 从函数源码提候选关键词
+search_code                 ← CodeGraph: 搜 "tcp_send_mss" 出现的文件
+find_commits_touching_symbol← PG KG:   反查改过这个符号的 commit
+search_lkml, get_commit_diff, get_commit_detail
+search_syzbot, search_cve, search_commits
+browse_subsystem_fixes, find_similar_crashes
+```
+
+5 个工具走 CodeGraph，6 个走 PG KG。**两个 KG 协同的典型流**：
+
+1. `get_function_source('tcp_send_mss')` → CodeGraph 返回函数体
+2. LLM 看到函数体里调了 `tcp_current_mss`、用了 `sk_gso_max_size`
+3. `expand_query_from_symbol('tcp_send_mss')` → CodeGraph 提周边标识符
+4. `find_commits_touching_symbol('sk_gso_max_size')` → PG KG 反查 →
+   召回 GT commit `9ab5cf19fb0e`
+5. `get_commit_diff(...)` → 看具体改了哪几行
+
+CodeGraph 干的是"**这个符号长什么样、谁引用了它**"；PG KG 干的是"**这个
+符号被哪些 commit 改过、commit 和 bug/CVE/邮件什么关系**"。两层都不可
+替代 — symbol→commit 边（PG）和 symbol→source（CodeGraph）解决不同维度
+的问题。
+
+#### CodeGraph 是否纳入 Q15 §一 完成度评估？
+
+**不在本次 KG 攻关期范围内**。理由：
+- CodeGraph 是外部独立服务（Zoekt + SCIP 标准技术栈），不归我们的 KG
+  保真度检查管。
+- 它的 "数据 = OLK 源码本身"，准确性由 OLK 仓库的代码本身决定。
+- 我们只关心**接入是否健康**（MCP `initialize` 探活）+ **repo 映射是否
+  对**（`OLK-6.6` / `v6.6` → `olk-kernel`，见 `retrieval/CLAUDE.md`）。
+
+如果未来要把 CodeGraph 的数据保真度也纳入 KG audit（比如验证某函数返回
+源码与 OLK 仓库 `cat-file` 一致），需要新增一类 audit；不在 v2.3 计划内。
+
+---
+
+### 四、实战例子：一次 OOM 故障问答完整数据流
 
 **用户输入**：
 
@@ -169,7 +243,7 @@ Backport commit 892962a26026 to OLK-6.6 (present in 6.6; missing from 5.10).
 - check_backport_status confirmed OLK-6.6 inclusion
 ```
 
-### 四、LLM 与 KG 的交互模型
+### 五、LLM 与 KG 的交互模型
 
 ```
                   ┌──────────────────────────┐

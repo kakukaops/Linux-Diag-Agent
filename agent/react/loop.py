@@ -107,8 +107,27 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
             or "<final_answer>" in content
             or "<insufficient_evidence>" in content
         ):
-            verdict = ("insufficient_evidence"
-                       if "<insufficient_evidence>" in content else "diagnosed")
+            # v2.3 fix: be strict about what counts as "diagnosed". Some
+            # providers / safety filters return finish_reason='stop' with
+            # empty or near-empty content. Previously this fell through to
+            # verdict='diagnosed' with final_answer='', producing a blank
+            # report and confusing downstream bind_claims (it saw analysis=""
+            # → extracted 0 claims → groundedness='speculative' with 0/0
+            # counts — surfaced by kasan-002 v2.3 smoke 2026-05-28).
+            stripped = content.strip()
+            if "<insufficient_evidence>" in content:
+                verdict = "insufficient_evidence"
+            elif "<final_answer>" in content and stripped:
+                verdict = "diagnosed"
+            else:
+                # No closing tag AND/OR no substantive content — the LLM
+                # exited without producing a defensible answer. Don't pretend
+                # we diagnosed; surface honestly as insufficient.
+                verdict = "insufficient_evidence"
+                if not stripped:
+                    content = ("LLM exited with empty content and no "
+                               "final/insufficient marker — treated as "
+                               "insufficient evidence.")
             return ReactResult(verdict, content, step, messages, trace,
                                tokens_used, list(seen_hashes))
 

@@ -105,6 +105,46 @@ def test_loop_errored_tool_does_not_harvest():
     assert result.react_evidence_hashes == []
 
 
+def test_loop_empty_content_no_tags_becomes_insufficient():
+    """Regression: kasan-002 v2.3 smoke 2026-05-28 showed verdict=diagnosed +
+    final_answer='' (LLM returned empty content with finish_reason=stop and
+    no tool calls). Default-to-diagnosed produced a blank report. Fix:
+    treat empty/markerless exits as insufficient_evidence honestly."""
+    empty = ChatResponse(content="", finish_reason="stop", tool_calls=[])
+    provider = FakeProvider(empty)
+    result = run_react_loop(provider=provider, registry=_registry(),
+                            route="kernel", system_prompt="s", user_prompt="u")
+    assert result.verdict == "insufficient_evidence"
+    assert "empty content" in result.final_answer.lower() \
+        or "insufficient" in result.final_answer.lower()
+
+
+def test_loop_content_without_final_tag_is_insufficient():
+    """LLM rambles without producing <final_answer>/<insufficient_evidence>
+    → don't auto-grant 'diagnosed'."""
+    rambling = ChatResponse(
+        content="I think this could be an OOM but I'm not sure...",
+        finish_reason="stop", tool_calls=[],
+    )
+    provider = FakeProvider(rambling)
+    result = run_react_loop(provider=provider, registry=_registry(),
+                            route="kernel", system_prompt="s", user_prompt="u")
+    assert result.verdict == "insufficient_evidence"
+
+
+def test_loop_diagnosed_requires_substantive_final_tag():
+    """The happy path: <final_answer> tag with substantive content."""
+    fin = ChatResponse(
+        content="<final_answer>OOM from memcg throttle of dying tasks.</final_answer>",
+        finish_reason="stop", tool_calls=[],
+    )
+    provider = FakeProvider(fin)
+    result = run_react_loop(provider=provider, registry=_registry(),
+                            route="kernel", system_prompt="s", user_prompt="u")
+    assert result.verdict == "diagnosed"
+    assert "memcg" in result.final_answer
+
+
 def test_loop_dispatches_tool_then_diagnoses():
     provider = FakeProvider(
         _resp_tools(_tool_call("get_meminfo")),

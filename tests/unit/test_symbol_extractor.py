@@ -67,11 +67,56 @@ def test_extract_skips_type_keywords():
 
 
 def test_extract_typedef_fallthrough():
-    """Typedef line: take the first non-keyword token as a weak signal."""
+    """Typedef line: take the first plausible kernel-shape identifier."""
     sym, kind = extract_symbols_from_context(
         "typedef struct my_thing my_thing_t;"
     )
-    assert sym == "my_thing"  # first non-keyword identifier
+    assert sym == "my_thing"   # snake_case, passes plausibility check
+    assert kind == "unknown"
+
+
+def test_fallback_rejects_bare_lowercase_variable():
+    """Real noise from Run 9: 'if (config->magic == X)' surfaced 'config'
+    as a symbol 916 times. Plausibility check now rejects bare lowercase
+    short words."""
+    sym, _ = extract_symbols_from_context("if (config->magic == X)")
+    assert sym is None, "should not surface 'config' as a symbol"
+
+    sym, _ = extract_symbols_from_context("do {")
+    assert sym is None, "'do' is a C keyword and short"
+
+    sym, _ = extract_symbols_from_context("obj = NULL")
+    # 'obj' (3 chars) too short; 'NULL' is uppercase but only 4 chars and
+    # the actual extraction path tries `= or [` struct pattern first.
+    # If both fail, fallback rejects 'obj' (too short, no _).
+    # We just assert no false 'obj' / no leakage of single short words.
+    assert sym != "obj"
+
+
+def test_fallback_accepts_snake_case_struct_name():
+    """Legit kernel struct/type names should survive the fallback path."""
+    for context in (
+        "static struct task_struct *foo",
+        "static struct bpf_attr *attr",
+        "struct kvm_vcpu_arch *arch",
+    ):
+        sym, kind = extract_symbols_from_context(context)
+        assert sym is not None, f"failed on {context!r}"
+        assert "_" in sym, f"{sym} should be snake_case"
+        assert kind == "unknown"
+
+
+def test_fallback_accepts_upper_macro():
+    """Capital-letter constants / macro names pass plausibility."""
+    sym, _ = extract_symbols_from_context("FOO_BAR_BAZ + 1")
+    assert sym == "FOO_BAR_BAZ"
+
+
+def test_fallback_rejects_english_words():
+    """Doc-comment lines like 'The function does X' should not produce
+    symbols 'The'/'function'/'does'."""
+    sym, _ = extract_symbols_from_context("The function does X")
+    assert sym is None or sym not in {"The", "function", "does"}
 
 
 # ── _parse_diff_for_symbols ─────────────────────────────────────────────────

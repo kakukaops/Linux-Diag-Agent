@@ -53,11 +53,41 @@ logger = logging.getLogger(__name__)
 # instance) or end (#define X).
 _C_IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _TYPE_KEYWORDS = frozenset({
+    # type qualifiers
     "static", "const", "extern", "inline", "void", "char", "int",
     "long", "short", "unsigned", "signed", "u8", "u16", "u32", "u64",
     "s8", "s16", "s32", "s64", "size_t", "ssize_t", "bool", "struct",
-    "union", "enum", "typedef",
+    "union", "enum", "typedef", "auto", "register", "volatile",
+    # control flow — these surface from `if/while/for` hunk contexts
+    "if", "else", "for", "while", "do", "return", "goto", "switch",
+    "case", "break", "continue", "default",
+    # preprocessor — `#endif`, `#ifdef`, `#ifndef`, `#elif` lines
+    "endif", "ifdef", "ifndef", "elif", "include", "pragma",
+    # English connectors that bleed in from documentation hunks
+    "the", "The", "This", "this", "and", "or", "not", "is",
+    "Description", "TODO", "FIXME", "XXX",
 })
+
+
+def _is_plausible_kernel_symbol(token: str) -> bool:
+    """Fallback acceptance test for symbols without a strong syntactic signal.
+
+    Real kernel identifiers are either snake_case (containing '_'), or
+    UPPER_SNAKE macros, or sufficiently long to be unambiguous. Variable
+    names like 'config', 'obj', 'source' that bleed in from `if (x->...)`
+    contexts must be rejected.
+    """
+    if len(token) < 4:
+        return False
+    if token in _TYPE_KEYWORDS:
+        return False
+    if token.isupper() and len(token) >= 3:    # FOO_BAR macro
+        return True
+    if "_" in token:                            # snake_case identifier
+        return True
+    if len(token) >= 8 and any(c.isupper() for c in token[1:]):  # CamelCase
+        return True
+    return False    # bare lowercase short word → likely a variable name
 
 _HUNK_FUNCNAME_RE = re.compile(
     r"@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@\s*(.*)$"
@@ -86,14 +116,21 @@ def extract_symbols_from_context(context: str) -> tuple[str | None, str]:
             return (word, "function")
 
     # Find identifier followed by `[` or `=` — struct/array instance.
-    for m in re.finditer(_C_IDENT + r"\s*[\[=]", s):
+    # The `=` must be assignment, NOT comparison (`==`): otherwise
+    # `if (foo->magic == X)` surfaces 'magic' as a struct. Also gate on
+    # plausibility: bare lowercase short names like 'obj = NULL' are
+    # variable assignments, not struct definitions.
+    for m in re.finditer(_C_IDENT + r"\s*(?:\[|=(?!=))", s):
         word = re.match(_C_IDENT, m.group(0)).group(0)
-        if word not in _TYPE_KEYWORDS:
+        if word not in _TYPE_KEYWORDS and _is_plausible_kernel_symbol(word):
             return (word, "struct")
 
-    # Fallback: first non-keyword identifier in the line.
+    # Fallback: first non-keyword identifier in the line, BUT only if it
+    # looks like a real kernel symbol (snake_case, UPPER_MACRO, or long
+    # CamelCase). Bare lowercase short words like 'config' / 'obj' / 'do'
+    # come from `if (x->...)` body contexts and are rejected.
     for token in re.findall(_C_IDENT, s):
-        if token not in _TYPE_KEYWORDS:
+        if _is_plausible_kernel_symbol(token):
             return (token, "unknown")
 
     return (None, "unknown")

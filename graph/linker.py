@@ -341,15 +341,20 @@ def link_nvd_commits(engine: "Engine", *, batch_size: int | None = None) -> int:
         ).scalar() or 0
 
         # One-shot bulk insert. JSON-array elements are exploded LATERAL,
-        # prefix-matched against kernel_commit via LIKE on the 12-char head.
-        # Deduplication is handled by uq_lcc + ON CONFLICT DO NOTHING.
+        # then EQUALITY-matched against kernel_commit.short_hash (a 12-char
+        # B-tree-indexed column populated for every row). Pre-v2.3 used
+        # `kc.hash LIKE substring(lower(sha), 1, 12) || '%'` which PG could
+        # not prove was index-eligible from inside the LATERAL — it
+        # degraded to a seq scan over 1.5M rows per fix-SHA, taking 45+ min
+        # on the 60K-SHA workload after Linux Kernel CVE Project ingest.
+        # Equality on indexed short_hash drops it to seconds.
         conn.execute(text("""
             INSERT INTO link_commit_cve (commit_hash, cve_id, link_type, source)
             SELECT DISTINCT kc.hash, c.cve_id, 'nvd_ref', 'nvd'
               FROM cve c
               CROSS JOIN LATERAL json_array_elements_text(c.fix_commits) AS sha
               JOIN kernel_commit kc
-                ON kc.hash LIKE substring(lower(sha) FROM 1 FOR 12) || '%'
+                ON kc.short_hash = substring(lower(sha) FROM 1 FOR 12)
              WHERE c.fix_commits IS NOT NULL
                AND json_array_length(c.fix_commits) > 0
             ON CONFLICT ON CONSTRAINT uq_lcc DO NOTHING

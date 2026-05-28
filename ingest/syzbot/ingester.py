@@ -76,15 +76,23 @@ class SyzbotIngester(BaseIngester):
         }
 
     def _upsert_crash(self, crash: SyzbotCrash, report: RunReport, quarantine: Quarantine) -> None:
+        # v2.3: also write fix_commits (jsonb) — the FULL list of fix SHAs
+        # including stable backports, parallel to cve.fix_commits. The
+        # primary fix_commit column stays as fix_commits[0] for back-compat.
+        import json
+        fix_list_json = json.dumps(crash.fix_commit_list) if crash.fix_commit_list else None
         sql = text("""
             INSERT INTO syzbot_crash
-                (syzbot_id, title, status, fix_commit, stack_trace, stack_signature)
+                (syzbot_id, title, status, fix_commit, fix_commits,
+                 stack_trace, stack_signature)
             VALUES
-                (:sid, :title, :status, :fix, :trace, :sig)
+                (:sid, :title, :status, :fix, CAST(:fix_list AS jsonb),
+                 :trace, :sig)
             ON CONFLICT (syzbot_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 status = EXCLUDED.status,
                 fix_commit = COALESCE(EXCLUDED.fix_commit, syzbot_crash.fix_commit),
+                fix_commits = COALESCE(EXCLUDED.fix_commits, syzbot_crash.fix_commits),
                 stack_signature = COALESCE(EXCLUDED.stack_signature, syzbot_crash.stack_signature)
         """)
         try:
@@ -94,6 +102,7 @@ class SyzbotIngester(BaseIngester):
                     "title": crash.title,
                     "status": crash.status,
                     "fix": crash.fix_commit,
+                    "fix_list": fix_list_json,
                     "trace": crash.stack_trace,
                     "sig": crash.stack_signature,
                 })

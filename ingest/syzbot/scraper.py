@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import re
+
 import httpx
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -22,8 +24,19 @@ from ingest.syzbot.signature import stack_signature
 logger = logging.getLogger(__name__)
 
 _BASE = "https://syzkaller.appspot.com"
-_DELAY_S = 1.5
+_DELAY_S = 0.5     # was 1.5 — syzbot tolerates faster scraping; reduces full
+                   # ingest from ~4h to ~1.5h. Don't drop below 0.5 without
+                   # syzbot.appspot.com explicit consent.
 _TIMEOUT_S = 60
+
+# Match the canonical kernel.org commit URL syzbot embeds for "Fix commit:"
+# and "Fix bisection:" entries. The previous bare `Fix:` regex matched
+# nothing because syzbot's HTML uses `<b>Fix commit:</b>` followed by a
+# linked SHA inside an `<a>` tag.
+_KERNEL_COMMIT_URL_RE = re.compile(
+    r'git\.kernel\.org/pub/scm/linux/kernel/git/[^"\']+/commit/\?id=([0-9a-f]{8,40})',
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -34,7 +47,8 @@ class SyzbotCrash:
     subsystem: str | None = None
     first_seen: datetime | None = None
     last_seen: datetime | None = None
-    fix_commit: str | None = None
+    fix_commit: str | None = None              # primary (first) fix SHA
+    fix_commit_list: list[str] = field(default_factory=list)  # all fix SHAs incl. backports
     stack_trace: str | None = None
     stack_signature: str | None = None
     reproducer_c: str | None = None
@@ -131,13 +145,24 @@ class SyzbotScraper:
             crash.stack_trace = pre.get_text()
             crash.stack_signature = stack_signature(crash.stack_trace)
 
-        # Fix commit (look for "Fix:" or "Fixed by:" text patterns)
-        import re
-        fix_re = re.compile(r"(?:Fix:|Fixed by:)\s*([0-9a-f]{7,40})", re.IGNORECASE)
-        for m in fix_re.finditer(html):
-            crash.fix_commit = m.group(1)
-            crash.status = "fixed"
-            break
+        # Fix commit: a bug on /upstream/fixed has the "Fix commit:" marker
+        # plus per-stable-branch fix SHAs embedded as kernel.org commit URLs
+        # in the patched-status table (not always near the marker).
+        # Strategy: if the "Fix commit:" marker is present, scan the whole
+        # page for git.kernel.org commit/?id=<sha> links. Each unique SHA
+        # is a fix-commit candidate. Pre-v2.3 regex matched 0 because (a)
+        # the SHA isn't a bare hex run, it's inside an <a href> URL, and
+        # (b) the window after "Fix commit:" was too short.
+        if "Fix commit:" in html or "Patched on:" in html:
+            fix_shas: list[str] = []
+            for m in _KERNEL_COMMIT_URL_RE.finditer(html):
+                sha = m.group(1).lower()
+                if sha not in fix_shas:
+                    fix_shas.append(sha)
+            if fix_shas:
+                crash.fix_commit = fix_shas[0]
+                crash.fix_commit_list = fix_shas
+                crash.status = "fixed"
 
         # Reproducer links
         for a in soup.find_all("a", href=True):

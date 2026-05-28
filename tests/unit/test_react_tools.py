@@ -24,7 +24,8 @@ def test_build_registry_has_all_categories():
     assert {"get_commit_detail", "get_commit_diff", "check_backport_status",
             "get_regression_fixes", "get_function_source", "get_call_graph",
             "expand_query_from_symbol", "browse_subsystem_fixes",
-            "find_commits_touching_symbol", "find_similar_crashes"} <= names
+            "find_commits_touching_symbol", "find_similar_crashes",
+            "get_patch_series"} <= names
     # Category B
     assert {"parse_dmesg", "parse_sosreport", "extract_call_trace"} <= names
 

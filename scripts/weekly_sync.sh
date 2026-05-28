@@ -97,9 +97,24 @@ log "Phase 4: Cross-Graph Linker"
 run_py graph.linker run_all 2>&1 || log "WARN: linker failed"
 log "Phase 4 done"
 
-# ── Phase 5: Health check ────────────────────────────────────────────────
-log "Phase 5: health check"
+# ── Phase 5: KG verification — fast invariants ──────────────────────────
+log "Phase 5a: KG invariants (structural)"
+run_py scripts.kg_invariants --quiet || log "WARN: kg_invariants reported violations"
+log "Phase 5a done"
+
+# ── Phase 5b: KG verification — sampling audit ──────────────────────────
+log "Phase 5b: KG fidelity audit (sample=100)"
+run_py scripts.kg_audit --sample 100 || log "WARN: kg_audit below threshold"
+log "Phase 5b done"
+
+# ── Phase 5c: Neo4j ↔ PG reconcile ──────────────────────────────────────
+log "Phase 5c: Neo4j reconcile vs PG"
+run_py graph.reconcile || log "WARN: neo4j reconcile detected drift"
+log "Phase 5c done"
+
+# ── Phase 6: Health check ────────────────────────────────────────────────
+log "Phase 6: health check"
 run_py scripts.sync_audit || log "WARN: sync_audit returned non-zero"
-log "Phase 5 done"
+log "Phase 6 done"
 
 log "=== Weekly sync ${RUN_ID} complete ==="

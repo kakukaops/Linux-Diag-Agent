@@ -699,6 +699,71 @@ FIND_COMMITS_TOUCHING_SYMBOL = Tool(
     routes=_K,
 )
 
+def _get_patch_series(*, message_id: str, **_: object) -> str:
+    """Given a message_id from a [PATCH N/M] series, return all sibling
+    patches in the same series with their position + subject + author.
+
+    Useful when a single patch from a series is cited and the agent
+    needs the surrounding context (precondition patches, follow-ups).
+    """
+    from sqlalchemy import text
+    from storage.pg.engine import get_engine
+
+    mid = (message_id or "").strip()
+    if not mid:
+        return "error: message_id is required"
+
+    try:
+        with get_engine().connect() as conn:
+            row = conn.execute(text("""
+                SELECT series_subject, patch_number, series_total
+                  FROM lkml_patch WHERE message_id = :m
+            """), {"m": mid}).fetchone()
+            if not row or not row.series_subject:
+                return f"No patch series found for message_id={mid!r}."
+            series = conn.execute(text("""
+                SELECT p.patch_number, p.series_total, p.message_id,
+                       m.subject, m.author_name
+                  FROM lkml_patch p
+                  JOIN lkml_message m ON m.message_id = p.message_id
+                 WHERE p.series_subject = :s
+                 ORDER BY p.patch_number NULLS LAST
+                 LIMIT 50
+            """), {"s": row.series_subject}).fetchall()
+    except Exception as exc:
+        return f"DB error: {exc}"
+
+    out = [f"Patch series \"{row.series_subject[:80]}\" "
+           f"(this patch #{row.patch_number}/{row.series_total}):"]
+    for r in series:
+        marker = " ← this" if r.message_id == mid else ""
+        out.append(f"  [{r.patch_number}/{r.series_total}] {r.message_id[:40]} "
+                   f"{(r.author_name or '?')[:18]:<18} {(r.subject or '')[:70]}{marker}")
+    return "\n".join(out)
+
+
+GET_PATCH_SERIES = Tool(
+    name="get_patch_series",
+    description=(
+        "Given one LKML message_id from a [PATCH N/M] series, return all "
+        "sibling patches in the same series with their position, "
+        "subject, and author. Use when a single patch is cited and you "
+        "need the surrounding context — preconditions sometimes live in "
+        "patches 1-3 while the fix is in 5/7."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "message_id": {"type": "string",
+                            "description": "LKML message_id (no angle brackets)"},
+        },
+        "required": ["message_id"],
+    },
+    fn=_get_patch_series,
+    routes=_K,
+)
+
+
 FIND_SIMILAR_CRASHES = Tool(
     name="find_similar_crashes",
     description=(
@@ -733,5 +798,5 @@ ALL_CODE_TOOLS = [
     GET_REGRESSION_FIXES, GET_FUNCTION_SOURCE, GET_CALL_GRAPH,
     EXPAND_QUERY_FROM_SYMBOL, BROWSE_SUBSYSTEM_FIXES,
     FIND_COMMITS_TOUCHING_SYMBOL, FIND_SIMILAR_CRASHES,
-    GET_DEVICE_MAJOR_MAPPING,
+    GET_PATCH_SERIES, GET_DEVICE_MAJOR_MAPPING,
 ]

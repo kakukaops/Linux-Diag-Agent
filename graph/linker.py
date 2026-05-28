@@ -238,51 +238,54 @@ def _link_olk_upstream(conn: Any, report: LinkReport) -> None:
 # ── NVD → commit linker (WBS 3.3) ────────────────────────────────────────────
 
 
-def link_nvd_commits(engine: "Engine", *, batch_size: int = 500) -> int:
+def link_nvd_commits(engine: "Engine", *, batch_size: int | None = None) -> int:
     """Cross-reference NVD fix_commits JSON against kernel_commit hashes.
+
+    Walks ALL CVE rows that have fix_commits populated and inserts (commit,
+    cve) edges for every SHA that prefix-matches a kernel_commit row. Uses
+    a single bulk INSERT…SELECT via LATERAL json_array_elements_text so the
+    full link table is rebuilt in one DB round-trip.
+
+    The optional `batch_size` argument is kept for API compatibility but no
+    longer truncates the result set — prior to v2.3 it silently capped the
+    function at 500 CVEs (≈ 547 rows out of a 2,870-row upper bound), which
+    is why link_commit_cve was 5× too small.
 
     Returns count of new link_commit_cve rows inserted.
     """
-    from storage.pg.models import LinkCommitCve  # local import to avoid circular
+    if batch_size is not None and batch_size < 100:
+        logger.warning(
+            "link_nvd_commits batch_size %d ignored; processing all CVEs.",
+            batch_size,
+        )
 
-    inserted = 0
-    sql = text("""
-        SELECT cve_id, fix_commits
-          FROM cve
-         WHERE fix_commits IS NOT NULL
-           AND json_array_length(fix_commits) > 0
-         LIMIT :limit
-    """)
     with engine.begin() as conn:
-        rows = conn.execute(sql, {"limit": batch_size}).fetchall()
-        for cve_id, fix_commits in rows:
-            commits: list[str] = fix_commits if isinstance(fix_commits, list) else []
-            for sha in commits:
-                sha = sha.lower().strip()
-                exists = conn.execute(
-                    text("SELECT 1 FROM kernel_commit WHERE hash LIKE :prefix"),
-                    {"prefix": sha[:12] + "%"},
-                ).fetchone()
-                if not exists:
-                    continue
-                full_hash_row = conn.execute(
-                    text("SELECT hash FROM kernel_commit WHERE hash LIKE :prefix LIMIT 1"),
-                    {"prefix": sha[:12] + "%"},
-                ).fetchone()
-                if not full_hash_row:
-                    continue
-                full_hash = full_hash_row[0]
-                conn.execute(
-                    text("""
-                        INSERT INTO link_commit_cve (commit_hash, cve_id, link_type, source)
-                        VALUES (:h, :c, 'nvd_ref', 'nvd')
-                        ON CONFLICT ON CONSTRAINT uq_lcc DO NOTHING
-                    """),
-                    {"h": full_hash, "c": cve_id},
-                )
-                inserted += 1
+        before = conn.execute(
+            text("SELECT count(*) FROM link_commit_cve")
+        ).scalar() or 0
 
-    logger.info("NVD linker inserted %d commit-cve rows", inserted)
+        # One-shot bulk insert. JSON-array elements are exploded LATERAL,
+        # prefix-matched against kernel_commit via LIKE on the 12-char head.
+        # Deduplication is handled by uq_lcc + ON CONFLICT DO NOTHING.
+        conn.execute(text("""
+            INSERT INTO link_commit_cve (commit_hash, cve_id, link_type, source)
+            SELECT DISTINCT kc.hash, c.cve_id, 'nvd_ref', 'nvd'
+              FROM cve c
+              CROSS JOIN LATERAL json_array_elements_text(c.fix_commits) AS sha
+              JOIN kernel_commit kc
+                ON kc.hash LIKE substring(lower(sha) FROM 1 FOR 12) || '%'
+             WHERE c.fix_commits IS NOT NULL
+               AND json_array_length(c.fix_commits) > 0
+            ON CONFLICT ON CONSTRAINT uq_lcc DO NOTHING
+        """))
+
+        after = conn.execute(
+            text("SELECT count(*) FROM link_commit_cve")
+        ).scalar() or 0
+
+    inserted = after - before
+    logger.info("NVD linker inserted %d commit-cve rows (table: %d → %d)",
+                inserted, before, after)
     return inserted
 
 

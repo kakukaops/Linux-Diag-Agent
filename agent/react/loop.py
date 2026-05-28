@@ -27,9 +27,12 @@ logger = logging.getLogger(__name__)
 
 MAX_ITER = 15           # ADR-019 D3 hard ceiling
 REPEAT_LIMIT = 3        # ADR-019 D4: same (tool, args) repeated/failed N times → exit
-TOKEN_BUDGET = 200_000  # ADR-019 D3 per-investigation cap. 50K v1 → 150K v2 (LKML
+TOKEN_BUDGET = 250_000  # ADR-019 D3 per-investigation cap. 50K v1 → 150K v2 (LKML
                         # backfill expanded context) → 200K post-ADR-022 (gitee/atomgit
-                        # bug bodies 3-11KB each push tokens past 150K on 4/15 cases).
+                        # bug bodies 3-11KB each push tokens past 150K on 4/15 cases)
+                        # → 250K post-v2.3 KG (panic-002 budget_exhausted in Run 11 at
+                        # 219K; new KG tools surface more evidence per case so 200K is
+                        # tight for symptom-class cases doing 12+ tool calls).
 
 
 @dataclass

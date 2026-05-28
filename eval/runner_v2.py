@@ -199,6 +199,19 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
         "react_tokens_used": react_tokens,
         "react_tool_calls": len(tool_trace),
         "react_tools_used": list({t.get("tool") for t in tool_trace}),
+        # v2.3 P2: persist the full tool_trace including args so post-hoc
+        # analysis can answer "what symbol did the LLM actually query
+        # vs what it should have queried". Without args we can only count
+        # tool names — insufficient to diagnose recall failures.
+        "react_tool_trace": [
+            {
+                "step": t.get("step"),
+                "tool": t.get("tool"),
+                "args": (t.get("args") or "")[:500],  # truncate huge JSONs
+                "error": t.get("error", False),
+            }
+            for t in tool_trace
+        ],
         # Evidence quality
         "evidence_count": len(evidence),
         "recall_at_10": round(recall, 3) if recall is not None else None,

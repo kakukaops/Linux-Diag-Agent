@@ -25,7 +25,7 @@ def test_build_registry_has_all_categories():
             "get_regression_fixes", "get_function_source", "get_call_graph",
             "expand_query_from_symbol", "browse_subsystem_fixes",
             "find_commits_touching_symbol", "find_similar_crashes",
-            "get_patch_series"} <= names
+            "get_patch_series", "find_syzbot_fixed_by_commit"} <= names
     # Category B
     assert {"parse_dmesg", "parse_sosreport", "extract_call_trace"} <= names
 

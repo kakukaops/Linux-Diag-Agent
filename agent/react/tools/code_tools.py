@@ -213,15 +213,20 @@ def _find_similar_crashes(*, trace_text: str, limit: int = 10,
     try:
         with get_engine().connect() as conn:
             sz = conn.execute(text("""
-                SELECT syzbot_id, title, status, fix_commit
+                SELECT syzbot_id, title, status, fix_commit, fix_commits
                   FROM syzbot_crash
                  WHERE stack_signature = :s
                  LIMIT :n
             """), {"s": sig, "n": cap}).fetchall()
             for r in sz:
+                n_fixes = (len(r.fix_commits)
+                           if r.fix_commits else (1 if r.fix_commit else 0))
+                fix_part = ""
+                if r.fix_commit:
+                    extra = f" (+{n_fixes-1} backports)" if n_fixes > 1 else ""
+                    fix_part = f"  fix={r.fix_commit[:12]}{extra}"
                 rows.append(f"  syzbot {r.syzbot_id}  [{r.status or '?'}]  "
-                            f"{(r.title or '')[:90]}"
-                            + (f"  fix={r.fix_commit[:12]}" if r.fix_commit else ""))
+                            f"{(r.title or '')[:90]}{fix_part}")
 
             bg = conn.execute(text("""
                 SELECT id, source, external_id, title
@@ -764,6 +769,72 @@ GET_PATCH_SERIES = Tool(
 )
 
 
+def _find_syzbot_fixed_by_commit(*, commit_hash: str,
+                                 limit: int = 10, **_: object) -> str:
+    """Reverse-lookup of link_syzbot_commit: which syzbot bugs does this
+    commit (or any of its backports) fix?
+
+    Use when get_commit_detail or search_commits surfaces a commit and
+    you want to know if it's a known crash-fixing patch. Strong signal:
+    a commit that fixes ≥ 1 syzbot bug is a high-confidence patch.
+    """
+    from sqlalchemy import text
+    from storage.pg.engine import get_engine
+
+    h = (commit_hash or "").strip().lower()
+    if not h:
+        return "error: commit_hash is required"
+    cap = min(max(limit, 3), 25)
+
+    try:
+        with get_engine().connect() as conn:
+            rows = conn.execute(text("""
+                SELECT lsc.syzbot_id, sc.title, sc.status
+                  FROM link_syzbot_commit lsc
+                  JOIN syzbot_crash sc ON sc.syzbot_id = lsc.syzbot_id
+                 WHERE lsc.commit_hash = :h
+                    OR lsc.commit_hash LIKE substring(:h FROM 1 FOR 12) || '%'
+                 ORDER BY sc.status DESC
+                 LIMIT :n
+            """), {"h": h, "n": cap}).fetchall()
+    except Exception as exc:
+        return f"DB error: {exc}"
+
+    if not rows:
+        return f"No syzbot bugs are recorded as fixed by commit {h[:12]}."
+
+    out = [f"Commit {h[:12]} is the recorded fix for {len(rows)} syzbot "
+           f"bug{'s' if len(rows) != 1 else ''}:"]
+    for r in rows:
+        out.append(f"  {r.syzbot_id}  [{r.status or '?'}]  "
+                   f"{(r.title or '')[:90]}")
+    return "\n".join(out)
+
+
+FIND_SYZBOT_FIXED_BY_COMMIT = Tool(
+    name="find_syzbot_fixed_by_commit",
+    description=(
+        "Reverse-lookup: given a commit hash, return any syzbot bugs "
+        "this commit (or its backports) is recorded as fixing. A commit "
+        "that fixes ≥ 1 syzbot bug is a high-confidence patch — useful "
+        "to corroborate that a candidate fix actually resolved a real "
+        "kernel.org-reported crash."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "commit_hash": {"type": "string",
+                             "description": "Full or 12-char prefix SHA"},
+            "limit": {"type": "integer", "default": 10,
+                       "description": "Max syzbot bugs to return (3-25)"},
+        },
+        "required": ["commit_hash"],
+    },
+    fn=_find_syzbot_fixed_by_commit,
+    routes=_K,
+)
+
+
 FIND_SIMILAR_CRASHES = Tool(
     name="find_similar_crashes",
     description=(
@@ -798,5 +869,6 @@ ALL_CODE_TOOLS = [
     GET_REGRESSION_FIXES, GET_FUNCTION_SOURCE, GET_CALL_GRAPH,
     EXPAND_QUERY_FROM_SYMBOL, BROWSE_SUBSYSTEM_FIXES,
     FIND_COMMITS_TOUCHING_SYMBOL, FIND_SIMILAR_CRASHES,
-    GET_PATCH_SERIES, GET_DEVICE_MAJOR_MAPPING,
+    GET_PATCH_SERIES, FIND_SYZBOT_FIXED_BY_COMMIT,
+    GET_DEVICE_MAJOR_MAPPING,
 ]

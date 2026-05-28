@@ -314,6 +314,42 @@ def _link_olk_upstream(conn: Any, report: LinkReport) -> None:
 # ── NVD → commit linker (WBS 3.3) ────────────────────────────────────────────
 
 
+def link_syzbot_commits(engine: "Engine") -> int:
+    """Materialise syzbot_crash.fix_commits → link_syzbot_commit edges.
+
+    Mirror of link_nvd_commits using the short_hash equality JOIN trick
+    (B-tree index on kernel_commit.short_hash → ~10s for full rebuild
+    vs hours with LIKE).
+
+    Returns the count of NEW edges inserted (after - before).
+    """
+    with engine.begin() as conn:
+        before = conn.execute(
+            text("SELECT count(*) FROM link_syzbot_commit")
+        ).scalar() or 0
+
+        conn.execute(text("""
+            INSERT INTO link_syzbot_commit (syzbot_id, commit_hash, source)
+            SELECT DISTINCT sc.syzbot_id, kc.hash, 'syzbot_fix_url'
+              FROM syzbot_crash sc
+              CROSS JOIN LATERAL jsonb_array_elements_text(sc.fix_commits) AS sha
+              JOIN kernel_commit kc
+                ON kc.short_hash = substring(lower(sha) FROM 1 FOR 12)
+             WHERE sc.fix_commits IS NOT NULL
+               AND jsonb_array_length(sc.fix_commits) > 0
+            ON CONFLICT ON CONSTRAINT uq_lsc DO NOTHING
+        """))
+
+        after = conn.execute(
+            text("SELECT count(*) FROM link_syzbot_commit")
+        ).scalar() or 0
+
+    inserted = after - before
+    logger.info("syzbot linker inserted %d syzbot-commit rows (table: %d → %d)",
+                inserted, before, after)
+    return inserted
+
+
 def link_nvd_commits(engine: "Engine", *, batch_size: int | None = None) -> int:
     """Cross-reference NVD fix_commits JSON against kernel_commit hashes.
 

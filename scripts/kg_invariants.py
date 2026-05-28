@@ -161,6 +161,28 @@ CHECKS: list[Invariant] = [
         description="Revert-chain edges must point to real commits on both sides.",
     ),
     Invariant(
+        name="link_syzbot_commit.commit_hash FK closure",
+        sql="""
+            SELECT count(*) FROM link_syzbot_commit lsc
+             WHERE NOT EXISTS (
+                SELECT 1 FROM kernel_commit kc WHERE kc.hash = lsc.commit_hash
+             )
+        """,
+        expected_max=0,
+        description="Every link_syzbot_commit row must reference a real commit.",
+    ),
+    Invariant(
+        name="link_syzbot_commit.syzbot_id FK closure",
+        sql="""
+            SELECT count(*) FROM link_syzbot_commit lsc
+             WHERE NOT EXISTS (
+                SELECT 1 FROM syzbot_crash sc WHERE sc.syzbot_id = lsc.syzbot_id
+             )
+        """,
+        expected_max=0,
+        description="Every link_syzbot_commit row must reference a real syzbot bug.",
+    ),
+    Invariant(
         name="link_commit_symbol.commit_hash FK closure",
         sql="""
             SELECT count(*) FROM link_commit_symbol lcs

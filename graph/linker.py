@@ -265,38 +265,50 @@ def _upsert_commit_message_link(
 
 
 def _link_olk_upstream(conn: Any, report: LinkReport) -> None:
-    """Ensure mainline SHA exists in kernel_commit; update affected_versions."""
-    sql = text("""
-        SELECT olk.hash AS olk_hash,
-               olk.upstream_commit AS upstream_sha,
-               main.hash AS main_hash
+    """For OLK commits whose upstream_commit SHA isn't in kernel_commit yet,
+    insert a stub mainline row so the cross-graph linker can surface the
+    OLK ↔ upstream bridge.
+
+    Pre-v2.3: `LIMIT 500` capped each invocation to 500 new stubs (and the
+    per-row Python loop with SAVEPOINTs was 30× slower than a bulk insert).
+    Audit found 14,661 distinct orphan upstream SHAs remaining when the
+    function had logged "upstream_bridged: 500" repeatedly — it would have
+    needed 30+ invocations to finish.
+
+    Fix is one bulk INSERT…SELECT grouped by upstream_commit (dedup) with
+    ON CONFLICT (hash) DO NOTHING. The stub-subject format is preserved
+    verbatim — `[stub upstream for OLK <hash[:12]>]` — because
+    graph/reconcile.py pattern-matches it (see graph/CLAUDE.md).
+    """
+    before = conn.execute(text("""
+        SELECT count(*) FROM kernel_commit WHERE subject LIKE '[stub upstream for OLK %'
+    """)).scalar() or 0
+
+    conn.execute(text("""
+        INSERT INTO kernel_commit
+            (hash, subject, commit_date, origin, affected_versions)
+        SELECT olk.upstream_commit,
+               '[stub upstream for OLK ' || substring(MIN(olk.hash), 1, 12) || ']',
+               '1970-01-01'::timestamptz,
+               'mainline',
+               ARRAY['mainline']
           FROM kernel_commit olk
           LEFT JOIN kernel_commit main ON main.hash = olk.upstream_commit
          WHERE olk.upstream_commit IS NOT NULL
            AND olk.origin = 'olk'
            AND main.hash IS NULL
-         LIMIT 500
-    """)
-    rows = conn.execute(sql).fetchall()
-    for olk_hash, upstream_sha, _ in rows:
-        # The upstream commit isn't in our DB yet — record a stub so the graph
-        # linker can surface the bridge.  commit_date uses epoch as sentinel.
-        try:
-            conn.execute(text("SAVEPOINT stub_ins"))
-            conn.execute(
-                text("""
-                    INSERT INTO kernel_commit
-                        (hash, subject, commit_date, origin, affected_versions)
-                    VALUES (:h, :s, '1970-01-01'::timestamptz, 'mainline', ARRAY['mainline'])
-                    ON CONFLICT (hash) DO NOTHING
-                """),
-                {"h": upstream_sha, "s": f"[stub upstream for OLK {olk_hash[:12]}]"},
-            )
-            conn.execute(text("RELEASE SAVEPOINT stub_ins"))
-            report.upstream_bridged += 1
-        except Exception as exc:
-            conn.execute(text("ROLLBACK TO SAVEPOINT stub_ins"))
-            report.errors.append(f"upstream bridge {upstream_sha}: {exc}")
+         GROUP BY olk.upstream_commit
+        ON CONFLICT (hash) DO NOTHING
+    """))
+
+    after = conn.execute(text("""
+        SELECT count(*) FROM kernel_commit WHERE subject LIKE '[stub upstream for OLK %'
+    """)).scalar() or 0
+
+    inserted = after - before
+    report.upstream_bridged += inserted
+    logger.info("[linker] upstream bridge stubs: %d → %d (+%d)",
+                before, after, inserted)
 
 
 # ── NVD → commit linker (WBS 3.3) ────────────────────────────────────────────

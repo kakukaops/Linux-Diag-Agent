@@ -23,6 +23,7 @@ from graph.linker import (
     link_nvd_commits,
     _link_trailer_to_bug,
     _link_link_trailer_to_message,
+    _link_olk_upstream,
 )
 
 
@@ -133,6 +134,33 @@ def test_link_trailer_to_bug_uses_external_id_not_pk():
     bug_idx_sql = next(s for s in sqls if "FROM bug WHERE source" in s)
     assert "external_id" in bug_idx_sql, \
         "bug-id lookup must use external_id (the bugzilla bug number), not just bug.id"
+
+
+def test_link_olk_upstream_does_not_truncate():
+    """Regression: pre-v2.3 had a hard-coded `LIMIT 500` for OLK→upstream
+    stub insertion. With 14,661 distinct orphan upstream SHAs, the
+    function would have needed 30+ invocations to finish. The fix bulk-
+    inserts via INSERT…SELECT grouped by upstream_commit."""
+    conn = MagicMock()
+    conn.execute.return_value.scalar.return_value = 0   # before/after counts
+
+    from graph.linker import LinkReport
+    sqls = _capture_sql(_link_olk_upstream, conn, LinkReport())
+
+    insert_sqls = [s for s in sqls if "INSERT INTO kernel_commit" in s]
+    assert insert_sqls, "should issue an INSERT into kernel_commit (stub rows)"
+    for s in insert_sqls:
+        assert "LIMIT" not in s.upper(), \
+            f"regression: LIMIT clause re-introduced — {s[:200]}"
+        assert "ON CONFLICT" in s, "must dedupe via ON CONFLICT"
+    # The new bulk version uses GROUP BY to dedupe upstream SHAs.
+    assert any("GROUP BY" in s.upper() for s in insert_sqls), \
+        "bulk insert must GROUP BY upstream_commit to dedupe"
+
+    # Stub-subject format is critical for graph/reconcile.py — see
+    # graph/CLAUDE.md "do not modify". Assert preservation.
+    assert any("stub upstream for OLK" in s for s in insert_sqls), \
+        "stub-subject format must be preserved (graph/reconcile.py depends on it)"
 
 
 def test_link_link_trailer_to_message_does_not_truncate():

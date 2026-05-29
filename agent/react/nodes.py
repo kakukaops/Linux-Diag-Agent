@@ -106,6 +106,7 @@ def _merge_react_evidence(existing: list[dict], react_hashes: list[str]) -> list
                        hash, subject, body
                   FROM kernel_commit
                  WHERE substring(hash, 1, 12) = ANY(:keys)
+                   AND subject NOT LIKE '[stub upstream%'  -- v2.4 don't surface stubs
                  ORDER BY substring(hash, 1, 12), commit_date DESC NULLS LAST
             """), {"keys": keys12}).fetchall()
             rows = list(rs)

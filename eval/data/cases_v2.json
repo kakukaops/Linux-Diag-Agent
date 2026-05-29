@@ -13,7 +13,13 @@
     ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "OOM kill triggered by cgroup memory.limit_in_bytes=4GB exhaustion; java process RSS 3.8GB exceeded limit. Caused by memcg accounting undercount or misconfigured limit without swap.",
-    "notes": "Classic memcg-triggered OOM kill | dropped 5647e53f7856 (2023 docs-only, not in LSC)"
+    "notes": "Classic memcg-triggered OOM kill | dropped 5647e53f7856 (2023 docs-only, not in LSC)",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "find_commits_touching_symbol",
+      "browse_subsystem_fixes",
+      "search_commits"
+    ]
   },
   {
     "id": "oom-002",
@@ -29,7 +35,13 @@
     ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "High-order allocation failure due to memory fragmentation (fragmentation_index=980 is critical). kswapd cannot compact pages fast enough. Fix: increase vm.min_free_kbytes or enable transparent hugepage compaction.",
-    "notes": "Memory fragmentation OOM — no cgroup involved"
+    "notes": "Memory fragmentation OOM — no cgroup involved",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "find_commits_touching_symbol",
+      "browse_subsystem_fixes",
+      "search_commits"
+    ]
   },
   {
     "id": "oom-003",
@@ -44,7 +56,13 @@
     ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "mysqld consumed 6GB anon-rss on a 16GB system — likely buffer pool misconfiguration (innodb_buffer_pool_size too high) or memory leak. System-wide OOM (no cgroup), triggered by global page shortage.",
-    "notes": "System-wide OOM without memcg — mysqld memory leak or misconfiguration"
+    "notes": "System-wide OOM without memcg — mysqld memory leak or misconfiguration",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "find_commits_touching_symbol",
+      "browse_subsystem_fixes",
+      "search_commits"
+    ]
   },
   {
     "id": "softlockup-001",
@@ -63,7 +81,13 @@
       1467
     ],
     "ground_truth_root_cause": "kworker soft lockup in __schedule indicates a high-priority work item blocking the scheduler. Could be filesystem writeback (kworker/2:1H = high-priority), disk I/O hang, or scheduler starvation under heavy I/O load.",
-    "notes": "Scheduler soft lockup — kworker blocked in __schedule"
+    "notes": "Scheduler soft lockup — kworker blocked in __schedule",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "find_commits_touching_symbol",
+      "browse_subsystem_fixes",
+      "search_commits"
+    ]
   },
   {
     "id": "softlockup-002",
@@ -79,7 +103,12 @@
     ],
     "ground_truth_root_cause": "mysqld blocked in D state waiting on ext4 writeback I/O. Likely cause: disk/storage I/O hang (SAN timeout, disk failure, storage controller lockup), or ext4 journal flush blocking. Check storage path.",
     "notes": "Hung task in ext4 writeback — I/O hang, not scheduler bug | I/O backend hang, no kernel fix expected (storage/firmware)",
-    "no_commit_expected": true
+    "no_commit_expected": true,
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [
+      "parse_dmesg",
+      "extract_call_trace"
+    ]
   },
   {
     "id": "kasan-001",
@@ -95,7 +124,14 @@
     ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Use-after-free in TCP receive path accessing request_sock_TCP after it was freed. Classic reqsk lifecycle bug: a TCP RST or concurrent close races with incoming SYN processing.",
-    "notes": "TCP use-after-free in reqsk handling"
+    "notes": "TCP use-after-free in reqsk handling",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "find_commits_touching_symbol",
+      "browse_subsystem_fixes",
+      "find_similar_crashes",
+      "search_commits"
+    ]
   },
   {
     "id": "kasan-002",
@@ -112,7 +148,14 @@
     ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "SKB tail overflow: tcp_send_mss computed MSS incorrectly causing skb_put to write 1 byte beyond the allocated skb. Likely triggered by non-standard MTU or GRO/TSO configuration interaction.",
-    "notes": "SKB out-of-bounds — TCP MSS calculation bug | GT: net: fix crash when config small gso_max_size (Wang Liang, 2024-10-23; mainline 9ab5cf19fb0e)"
+    "notes": "SKB out-of-bounds — TCP MSS calculation bug | GT: net: fix crash when config small gso_max_size (Wang Liang, 2024-10-23; mainline 9ab5cf19fb0e)",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "find_commits_touching_symbol",
+      "browse_subsystem_fixes",
+      "expand_query_from_symbol",
+      "search_commits"
+    ]
   },
   {
     "id": "panic-001",
@@ -128,7 +171,13 @@
     "expected_bug_ids": [],
     "ground_truth_root_cause": "XFS sb-recovery bug: when xlog_recover_do_reg_buffer hits an error after the superblock buffer log item has been initialised, the buffer is released without being added to the writeback list — leaving the buffer log item dangling and mount hangs in xfs_buf_wait_unpin. Fix: set the error and add the buffer to buffer_list so the normal write path can finish.",
     "notes": "xfs sb-recover mount hang — 2024-07 OLK fix (replaces old 2023 GT that was outside our link_commit_symbol backfill window)",
-    "no_commit_expected": false
+    "no_commit_expected": false,
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "find_commits_touching_symbol",
+      "browse_subsystem_fixes",
+      "find_similar_crashes"
+    ]
   },
   {
     "id": "panic-002",
@@ -142,7 +191,13 @@
     "expected_bug_ids": [],
     "ground_truth_root_cause": "NULL pointer dereference in ext4 writeback: ext4_writepages accesses a field at offset 0x68 of a NULL pointer — likely a freed/invalid inode or superblock pointer. Possibly triggered by concurrent unmount or disk error.",
     "notes": "ext4 writeback NULL deref — possible use-after-free in inode lifecycle | no specific upstream fix (symptom class / open bug)",
-    "no_commit_expected": true
+    "no_commit_expected": true,
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [
+      "extract_call_trace",
+      "find_similar_crashes",
+      "find_commits_touching_symbol"
+    ]
   },
   {
     "id": "hardware-001",
@@ -156,7 +211,14 @@
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Hardware memory error: MCE on Bank 5 (Memory Controller) with EDAC corrected error on DIMM slot CPU_SrcID#0_Ha#0_Chan#0_DIMM#0. CE → CE trend likely becoming UE. Recommend: monitor CE rate, schedule DIMM replacement if CE count is increasing.",
     "notes": "MCE + EDAC corrected error — hardware route required, NOT kernel commit search",
-    "no_commit_expected": true
+    "no_commit_expected": true,
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [
+      "parse_dmesg",
+      "get_mce_log",
+      "get_edac_errors",
+      "parse_taint_flags"
+    ]
   },
   {
     "id": "hardware-002",
@@ -170,7 +232,14 @@
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Fatal MCE caused by EDAC Uncorrected Error (UE) on DIMM Chan#1_DIMM#1. UE = multi-bit ECC failure that ECC cannot correct → hardware-level data corruption → mandatory panic. Action: replace DIMM Chan#1_DIMM#1 immediately.",
     "notes": "Fatal MCE + EDAC UE — definitive hardware failure (DIMM replacement required)",
-    "no_commit_expected": true
+    "no_commit_expected": true,
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [
+      "parse_dmesg",
+      "get_mce_log",
+      "get_edac_errors",
+      "get_hardware_inventory"
+    ]
   },
   {
     "id": "rcu-001",
@@ -184,7 +253,13 @@
     "expected_bug_ids": [],
     "ground_truth_root_cause": "RCU stall on CPU 0 — CPU is not passing through quiescent states for 5251 ticks (~52s). Root cause: long-running interrupt handler, disabled preemption in softirq, or BPF program consuming CPU without yielding.",
     "notes": "RCU sched stall — CPU preemption disabled or long interrupt | no specific upstream fix (symptom class / open bug)",
-    "no_commit_expected": true
+    "no_commit_expected": true,
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [
+      "parse_dmesg",
+      "extract_call_trace",
+      "find_similar_crashes"
+    ]
   },
   {
     "id": "lockdep-001",
@@ -198,7 +273,13 @@
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Circular lock dependency: jbd2 journal handle held while acquiring inode mutex in ext4_evict_inode. Lockdep detects potential deadlock between journal and eviction paths. Likely triggered by a concurrent truncate or unlink under journal pressure.",
     "notes": "ext4 lockdep: jbd2 handle vs i_mutex ordering | no specific upstream fix (symptom class / open bug)",
-    "no_commit_expected": true
+    "no_commit_expected": true,
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [
+      "find_commits_touching_symbol",
+      "find_similar_crashes",
+      "search_lkml"
+    ]
   },
   {
     "id": "change-001",
@@ -212,7 +293,13 @@
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Kernel regression: TCP behavior changed between 6.6.0-20 and 6.6.0-28. Possible causes: net/tcp socket option handling change, conntrack module behavior change, or TCP early RST on SYN backlog exhaustion. Check kernel changelog between versions.",
     "notes": "Change route: regression after kernel upgrade — should search commit changelog",
-    "no_commit_expected": true
+    "no_commit_expected": true,
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [
+      "search_commits",
+      "get_commit_diff",
+      "check_backport_status"
+    ]
   },
   {
     "id": "io-hang-001",
@@ -226,7 +313,12 @@
     "expected_bug_ids": [],
     "ground_truth_root_cause": "NVMe controller I/O timeout causing block queue stall: blk_mq_get_tag blocked waiting for request tags because NVMe queue is full (controller not draining). Root cause: NVMe controller firmware issue, PCIe link instability, or high queue depth under sustained write load.",
     "notes": "NVMe I/O hang — blk-mq tag exhaustion after controller timeout",
-    "no_commit_expected": true
+    "no_commit_expected": true,
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [
+      "parse_dmesg",
+      "find_similar_crashes"
+    ]
   },
   {
     "id": "syzbot-001",
@@ -241,7 +333,12 @@
     ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "Known syzbot bug 78761e13e81f4bfb: infinite loop in tcf_idr_check_alloc() holds the rtnl mutex, blocking all socket ioctl operations including devinet_ioctl. Fix: act_api: fix possible infinite loop in tcf_idr_check_alloc()",
-    "notes": "KG path test: find_similar_crashes signature match (this is a real syzbot bug 78761e13e81f4bfb in our DB) + find_syzbot_fixed_by_commit should surface d864319871b0"
+    "notes": "KG path test: find_similar_crashes signature match (this is a real syzbot bug 78761e13e81f4bfb in our DB) + find_syzbot_fixed_by_commit should surface d864319871b0",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "find_similar_crashes",
+      "find_syzbot_fixed_by_commit"
+    ]
   },
   {
     "id": "cve-001",
@@ -256,7 +353,13 @@
     ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "CVE-2024-26926 in Android binder driver: binder_get_object() dereferences an unaligned pointer leading to memory corruption. OLK-6.6 should have the upstream fix backported (or marked not-affected). Agent should call search_cve('CVE-2024-26926'), check link_commit_cve, then check_backport_status to verify.",
-    "notes": "KG path test: search_cve by ID + link_commit_cve reverse lookup + check_backport_status. CVE has 4 commits linked in link_commit_cve."
+    "notes": "KG path test: search_cve by ID + link_commit_cve reverse lookup + check_backport_status. CVE has 4 commits linked in link_commit_cve.",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "search_cve",
+      "check_backport_status",
+      "find_commits_touching_symbol"
+    ]
   },
   {
     "id": "revert-001",
@@ -270,7 +373,77 @@
       "27a56c66cf641b1a107222cb902a23bc003aa41d"
     ],
     "expected_bug_ids": [],
-    "ground_truth_root_cause": "The proposed backport commit 2a0cdac65f9c was REVERTED upstream by 27a56c66cf64 ('Revert \"crypto: hisilicon/sec2: fix memory use-after-free issue\"') because the original fix introduced a regression. Agent must warn the user NOT to apply 2a0cdac65f9c alone — they need either the full set including the follow-up fix OR avoid the backport entirely.",
-    "notes": "KG path test: link_commit_revert reverse lookup. Agent should call get_regression_fixes(2a0cdac65f9c) or query link_commit_revert before recommending the backport."
+    "ground_truth_root_cause": "The proposed backport commit 2a0cdac65f9c was REVERTED upstream by 27a56c66cf64. Per the Revert commit body, the reason was: 'If the patch conflicts with the mainline patch, revert it to the mainline patch, and then incorporate the patch into the mainline patch.' Meaning the OLK-native fix conflicted with the version that mainline eventually accepted, so OLK reverted and took the mainline version instead. Agent must (1) detect the revert via link_commit_revert or get_regression_fixes, (2) warn the user not to apply 2a0cdac65f9c directly, and (3) recommend using the mainline version of the fix instead.",
+    "notes": "KG path test: link_commit_revert reverse lookup. Agent should call get_regression_fixes(2a0cdac65f9c) or query link_commit_revert before recommending the backport. | GT corrected after Run 16 reveal: revert reason was mainline-alignment, NOT a regression. My original GT was wrong.",
+    "primary_goal": "kg_efficiency",
+    "expected_kg_paths": [
+      "get_regression_fixes",
+      "get_commit_detail",
+      "check_backport_status"
+    ]
+  },
+  {
+    "id": "intrinsic-001",
+    "category": "concept",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "unknown",
+    "expected_fault_kind": "generic",
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [],
+    "raw_input": "We're seeing intermittent ~5ms scheduler wakeup latency spikes on OLK-6.6 nodes running mostly idle but with one CPU pinned doing userspace BPF reads. Workload runs in a containerized PREEMPT_NONE kernel. No oops, no warnings. Why might this be happening?",
+    "question": "Why ~5ms wakeup latency spikes when 1 CPU is busy with userspace BPF?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "no_commit_expected": true,
+    "ground_truth_root_cause": "PREEMPT_NONE kernels rely on voluntary scheduling points; long running userspace activity holding a CPU keeps the scheduler from rebalancing. Combined with BPF programs that may pin the CPU (no preemption inside BPF), wakeup latency on other CPUs can spike when load balancer is delayed. The agent must reason from intrinsic kernel knowledge: explain PREEMPT_NONE semantics, BPF non-preemption, and CFS load balancer timing. No specific commit fixes 'this' — it's by design. Recommend: switch to PREEMPT_VOLUNTARY or PREEMPT_DYNAMIC, or use a busy thread affinity that doesn't starve the scheduler.",
+    "notes": "Goal 3: KG silent (no commit, no syzbot, no CVE — design trade-off). Agent must reason from kernel semantics. Must clearly mark answer as 'low confidence, KG silent'."
+  },
+  {
+    "id": "intrinsic-002",
+    "category": "concept",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "unknown",
+    "expected_fault_kind": "generic",
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [],
+    "raw_input": "Question: in a KVM guest running OLK-6.6 with EPT enabled, why would we see page_fault rates much higher (10x) than on bare metal doing the same workload? Are these spurious or real?",
+    "question": "KVM guest sees 10x higher page_fault rate than bare metal — why?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "no_commit_expected": true,
+    "ground_truth_root_cause": "Most are EPT (Extended Page Table) violations / nested page faults, not guest #PF — counted in the same metric on some kernel versions. Causes include: (1) guest writing to read-only pages KVM has marked for COW, (2) MMU notifier invalidations between host and guest, (3) initial guest page-fill during memory allocation. They're 'real' EPT events but architecturally expected. Agent should explain EPT vs guest paging, differentiate from real bugs, and suggest tracing tools (kvm_mmu_set_spte, kvm:kvm_page_fault).",
+    "notes": "Goal 3: tests intrinsic LLM knowledge of KVM/EPT semantics. No KG path will return a specific answer — virtualisation concept question."
+  },
+  {
+    "id": "intrinsic-003",
+    "category": "concept",
+    "kernel_version": "OLK-5.10",
+    "expected_route": "unknown",
+    "expected_fault_kind": "generic",
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [],
+    "raw_input": "On OLK-5.10, my workload is hitting OOM kills sporadically. I'm thinking of setting vm.overcommit_memory=2 with overcommit_ratio=80 to be more conservative. Will this prevent the OOM kills? What's the risk?",
+    "question": "Will vm.overcommit_memory=2 + ratio=80 prevent OOM kills? What are the risks?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "no_commit_expected": true,
+    "ground_truth_root_cause": "Setting overcommit_memory=2 ratio=80 won't necessarily PREVENT OOM — it changes WHO fails (mmap()/fork() returning ENOMEM earlier) vs the OOM killer kicking in. Risks: (1) processes doing speculative large allocations (JVM, Go, Python with copy-on-write fork) will see ENOMEM and may crash or fall back to smaller allocations; (2) commit limit = ratio% * RAM + swap, which on systems without swap is just 80% RAM — most workloads expecting overcommit will fail. Recommend: first identify which process is the OOM target (oom_score_adj, kernel logs), then decide whether to (a) tune that process, (b) add swap, (c) shift to cgroup memory.high to fail allocations softly, or (d) accept overcommit and add swap. The kernel has no 'bug' here — it's a config/policy decision.",
+    "notes": "Goal 3: config-vs-bug judgement. Agent must reason about vm.overcommit semantics, distinguish 'kernel behaviour by design' from 'kernel bug', and give actionable advice without recommending a code fix."
+  },
+  {
+    "id": "intrinsic-004",
+    "category": "concept",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "unknown",
+    "expected_fault_kind": "generic",
+    "primary_goal": "intrinsic_knowledge",
+    "expected_kg_paths": [],
+    "raw_input": "We have a network driver that disables IRQs in its hardirq handler for ~300us to process a batch of completions before re-enabling. Under heavy traffic (~200k pps) we sometimes see softlockup warnings on the same CPU. Is the 300us disable interval the problem? What's the maximum safe duration?",
+    "question": "Hardirq disable interval 300us on a 200k pps NIC — is it the cause of softlockup warnings? What's safe?",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "no_commit_expected": true,
+    "ground_truth_root_cause": "300us per hardirq * 200k pps = 60ms IRQ load per second IF every packet causes a hardirq. With NAPI / softirq batching, hardirq rate << packet rate (e.g. 1 hardirq per ~64 packets → 3.1K hardirqs/s × 300us = ~1ms/s total). Softlockup threshold default is 20s without sched_clock_tick. So 300us alone is unlikely the direct cause — more likely: (a) interrupt coalescing tuning is wrong, the NIC isn't batching, hardirqs are too frequent, (b) softirq processing in ksoftirqd is starved by another CPU-bound thread on the same CPU, (c) NUMA imbalance forcing all RX queues to one CPU. Recommend: check /proc/interrupts rate, ethtool -c (coalescing), per-CPU softirq counters in /proc/softirqs, and irqbalance status. The 300us per hardirq is uncomfortable but probably not the root cause — if it WERE, you'd see hardlockup (NMI watchdog) not softlockup.",
+    "notes": "Goal 3: architecture/timing reasoning. Tests LLM's ability to do quantitative kernel timing analysis (CPU budget, IRQ batching, softirq vs hardirq). KG can't answer this — it's computation + concept."
   }
 ]

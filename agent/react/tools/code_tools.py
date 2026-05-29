@@ -305,6 +305,7 @@ def _find_commits_touching_symbol(*, symbol: str,
           JOIN kernel_commit kc ON kc.hash = lcs.commit_hash
          WHERE lcs.symbol = :sym
            AND lcs.kind != 'sentinel'
+           AND kc.subject NOT LIKE '[stub upstream%'   -- v2.4 filter stubs
            AND kc.commit_date >= :cutoff
            {version_clause}
          ORDER BY substring(lcs.commit_hash, 1, 12), kc.commit_date DESC
@@ -375,6 +376,7 @@ def _browse_subsystem_fixes(*, subsystem_prefixes: str,
           FROM kernel_commit
          WHERE ({prefix_clauses})
            AND LOWER(subject) LIKE '%fix%'
+           AND subject NOT LIKE '[stub upstream%'   -- v2.4 filter stubs
            AND commit_date > :cutoff
            {contains_clause}
          ORDER BY commit_date DESC

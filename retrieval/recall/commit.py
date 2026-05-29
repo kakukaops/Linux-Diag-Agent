@@ -25,11 +25,19 @@ def recall(query: RetrievalQuery) -> list[Evidence]:
     if not keywords:
         return []
 
-    extra_where = ""
+    # v2.4: filter out stub upstream commits — placeholders created by
+    # _link_olk_upstream when an OLK commit references an upstream SHA
+    # we don't have in DB. They have date=1970-01-01, body=NULL, and
+    # subject='[stub upstream for OLK <hash>]', so they're useless to
+    # cite as evidence yet they DO appear in retrieval (Run 16 cve-001
+    # had the agent cite a stub instead of the real fix). Filter them
+    # at the recall layer so they never reach the agent's evidence pool.
+    where_clauses = ["subject NOT LIKE '[stub upstream%'"]
     extra_params: dict = {}
     if query.kernel_version:
-        extra_where = ":ver = ANY(affected_versions)"
+        where_clauses.append(":ver = ANY(affected_versions)")
         extra_params["ver"] = query.kernel_version
+    extra_where = " AND ".join(where_clauses)
 
     engine = get_engine()
     with engine.connect() as conn:

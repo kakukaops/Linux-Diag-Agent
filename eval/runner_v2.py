@@ -199,6 +199,20 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
         "react_tokens_used": react_tokens,
         "react_tool_calls": len(tool_trace),
         "react_tools_used": list({t.get("tool") for t in tool_trace}),
+        # v2.4 Goal-1 KG-path coverage. Per the 3-goal design lens:
+        # Goal 1 (KG efficiency) cases declare `expected_kg_paths` — the
+        # set of KG tools we predict an effective agent would use. This
+        # metric measures whether the agent actually went down those paths,
+        # independent of whether it found the GT commit. High coverage +
+        # low recall = "agent looked in the right places but the answer
+        # wasn't there"; low coverage + low recall = "agent didn't even try
+        # the available paths".
+        "expected_kg_paths": case.get("expected_kg_paths") or [],
+        "expected_kg_paths_coverage": _coverage(
+            case.get("expected_kg_paths") or [],
+            {t.get("tool") for t in tool_trace if not t.get("error")},
+        ),
+        "primary_goal": case.get("primary_goal") or "unclassified",
         # v2.3 P2: persist the full tool_trace including args so post-hoc
         # analysis can answer "what symbol did the LLM actually query
         # vs what it should have queried". Without args we can only count
@@ -228,8 +242,27 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
         "judge_reasoning": judge_reasoning,
         # Report
         "report_md_length": len(state.get("report_md", "")),
+        # v2.4 audit: persist the actual final analysis so post-hoc reading
+        # can answer "did the agent really get it wrong, or did the judge
+        # disagree with a defensible alternative?". Capped to keep file size
+        # reasonable on long answers.
+        "react_final_answer": (state.get("react_final_answer") or "")[:4000],
+        "final_analysis": (state.get("final_analysis") or "")[:4000],
         "error": state.get("error"),
     }
+
+
+def _coverage(expected: list[str], actual_set: set[str]) -> float | None:
+    """KG-path coverage = |expected ∩ actual| / |expected|.
+
+    Returns None when expected is empty — for Goal-3 cases (intrinsic
+    knowledge / KG silent by design) there's no expected path set,
+    so coverage is not applicable. The runner / summary skip None.
+    """
+    if not expected:
+        return None
+    hits = sum(1 for p in expected if p in actual_set)
+    return round(hits / len(expected), 3)
 
 
 def _compute_recall(evidence: list[dict], case: dict) -> float | None:
@@ -499,11 +532,52 @@ def _compute_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     )
 
     recall_scored = [r for r in ok if r.get("recall_at_10") is not None]
+
+    # v2.4 Goal-1 KG-path coverage (across cases that declared expected_kg_paths)
+    coverage_scored = [r for r in ok
+                       if r.get("expected_kg_paths_coverage") is not None]
+    avg_kg_coverage = (
+        round(sum(r["expected_kg_paths_coverage"] for r in coverage_scored) /
+              len(coverage_scored), 3)
+        if coverage_scored else None
+    )
+
+    # v2.4 per-primary-goal breakout: Goal-1 (KG efficiency) and
+    # Goal-3 (intrinsic knowledge) are evaluated under DIFFERENT lenses
+    # — mixing them washed out the signal in prior runs.
+    by_goal: dict[str, list] = {}
+    for r in ok:
+        by_goal.setdefault(r.get("primary_goal", "unclassified"), []).append(r)
+    goal_breakdown = {}
+    for goal, rs in by_goal.items():
+        diag = [x for x in rs if x.get("react_verdict") == "diagnosed"]
+        grd = [x for x in diag if x.get("groundedness") == "grounded"]
+        grd_judged = [x for x in grd if x.get("root_cause_correct") is not None]
+        cov_rs = [x for x in rs if x.get("expected_kg_paths_coverage") is not None]
+        rec_rs = [x for x in rs if x.get("recall_at_10") is not None]
+        goal_breakdown[goal] = {
+            "n": len(rs),
+            "diagnosed": len(diag),
+            "grounded": len(grd),
+            "grounded_correct_rate": (
+                round(sum(1 for x in grd_judged if x["root_cause_correct"]) /
+                      len(grd_judged), 3) if grd_judged else None),
+            "avg_recall_at_10": (
+                round(sum(x["recall_at_10"] for x in rec_rs) / len(rec_rs), 3)
+                if rec_rs else None),
+            "avg_kg_path_coverage": (
+                round(sum(x["expected_kg_paths_coverage"] for x in cov_rs) /
+                      len(cov_rs), 3) if cov_rs else None),
+        }
+
     return {
         "total": n,
         "errors": len(errors),
         "avg_recall_at_10": avg("recall_at_10"),
         "recall_scored_n": len(recall_scored),
+        "avg_kg_path_coverage": avg_kg_coverage,
+        "kg_coverage_scored_n": len(coverage_scored),
+        "per_goal": goal_breakdown,
         "avg_traceability": avg("traceability"),
         "avg_elapsed_ms": avg("elapsed_ms"),
         "avg_react_iterations": avg("react_iterations"),
@@ -586,6 +660,30 @@ def _print_summary(s: dict) -> None:
     print(f"  ★ Grounded+Correct:  {s['grounded_correct_rate']:.1%} (judge ✓ AMONG grounded — strictest)" if s.get('grounded_correct_rate') is not None else "  ★ Grounded+Correct:  n/a")
     print(f"  Avg verified-claim:  {s['avg_verified_claim_rate']:.1%}" if s.get('avg_verified_claim_rate') is not None else "  Avg verified-claim:  n/a")
     print(f"  Judge uncertain:     {s['judge_uncertain_rate']:.1%} (dual judges disagreed)" if s.get('judge_uncertain_rate') is not None else "  Judge uncertain:     n/a")
+    print(f"")
+    # v2.4 KG-path coverage (Goal-1 lens — how thoroughly the agent
+    # used the available knowledge graph paths).
+    cov = s.get("avg_kg_path_coverage")
+    cov_n = s.get("kg_coverage_scored_n", 0)
+    if cov is not None:
+        print(f"")
+        print(f"  ── KG-path coverage (v2.4 Goal-1: did agent use available paths?) ─")
+        print(f"  KG path coverage:    {cov:.1%}  "
+              f"(over {cov_n} cases with expected_kg_paths)")
+        # Also break out by primary_goal so Goal-1 vs Goal-3 don't wash out
+        per_goal = s.get("per_goal") or {}
+        print(f"")
+        print(f"  ── Per primary_goal (v2.4 three-goal lens) ─────────────────────")
+        for goal, d in sorted(per_goal.items()):
+            gc = d.get("grounded_correct_rate")
+            gc_s = f"grounded+correct={gc:.0%}" if gc is not None else "g+c=n/a"
+            kgcov = d.get("avg_kg_path_coverage")
+            kgcov_s = f"kg_cov={kgcov:.0%}" if kgcov is not None else "kg_cov=n/a"
+            rec = d.get("avg_recall_at_10")
+            rec_s = f"recall={rec:.0%}" if rec is not None else "recall=n/a"
+            print(f"    {goal:<22} n={d['n']:>2} diagnosed={d['diagnosed']:>2}/{d['n']} "
+                  f"{gc_s:<24} {kgcov_s:<14} {rec_s}")
+
     print(f"")
     print(f"  Avg latency:         {s.get('avg_elapsed_ms', 0)/1000:.1f}s")
     print(f"  Avg ReAct iters:     {s.get('avg_react_iterations', 0):.1f}")

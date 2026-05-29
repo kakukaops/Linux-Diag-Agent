@@ -145,12 +145,19 @@ def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
     out: list[Evidence] = []
     try:
         with get_engine().connect() as conn:
+            # v2.4: every cross-graph injection query filters out
+            # `[stub upstream for OLK %]` rows. Stubs are useful for graph
+            # closure but useless as cited evidence (date=1970, body=NULL).
+            # Run 16 cve-001 had the agent cite a stub as "the fix" — fixed
+            # here at retrieval time so downstream tools and prompts never
+            # see them.
             if message_ids:
                 rows = conn.execute(text("""
                     SELECT lcm.commit_hash, lcm.message_id, kc.subject
                       FROM link_commit_message lcm
                       JOIN kernel_commit kc ON kc.hash = lcm.commit_hash
                      WHERE lcm.message_id = ANY(:mids)
+                       AND kc.subject NOT LIKE '[stub upstream%'
                 """), {"mids": list(message_ids.keys())}).fetchall()
                 for r in rows:
                     if r.commit_hash in existing_hashes:
@@ -167,6 +174,7 @@ def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
                       FROM link_commit_cve lcc
                       JOIN kernel_commit kc ON kc.hash = lcc.commit_hash
                      WHERE lcc.cve_id = ANY(:cves)
+                       AND kc.subject NOT LIKE '[stub upstream%'
                 """), {"cves": list(cve_ids.keys())}).fetchall()
                 for r in rows:
                     if r.commit_hash in existing_hashes:
@@ -192,6 +200,7 @@ def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
                           FROM link_commit_bug lcb
                           JOIN kernel_commit kc ON kc.hash = lcb.commit_hash
                          WHERE lcb.bug_id = ANY(:bids)
+                           AND kc.subject NOT LIKE '[stub upstream%'
                     )
                     SELECT commit_hash, bug_id, subject FROM ranked WHERE rn <= :n
                 """), {"bids": list(bug_ids.keys()),
@@ -217,12 +226,14 @@ def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
                       FROM link_commit_fixes lcf
                       JOIN kernel_commit kc ON kc.hash = lcf.fixed_hash
                      WHERE lcf.fixer_hash = ANY(:hashes)
+                       AND kc.subject NOT LIKE '[stub upstream%'
                     UNION ALL
                     SELECT lcf.fixed_hash AS via, lcf.fixer_hash AS target,
                            kc.subject, 'fixed_by' AS direction
                       FROM link_commit_fixes lcf
                       JOIN kernel_commit kc ON kc.hash = lcf.fixer_hash
                      WHERE lcf.fixed_hash = ANY(:hashes)
+                       AND kc.subject NOT LIKE '[stub upstream%'
                     LIMIT 50
                 """), {"hashes": list(commit_hashes.keys())}).fetchall()
                 for r in rows:
@@ -241,12 +252,14 @@ def _inject_linked_commits(items: list[Evidence]) -> list[Evidence]:
                       FROM link_commit_revert lcr
                       JOIN kernel_commit kc ON kc.hash = lcr.reverted_hash
                      WHERE lcr.reverter_hash = ANY(:hashes)
+                       AND kc.subject NOT LIKE '[stub upstream%'
                     UNION ALL
                     SELECT lcr.reverted_hash AS via, lcr.reverter_hash AS target,
                            kc.subject, 'reverted_by' AS direction
                       FROM link_commit_revert lcr
                       JOIN kernel_commit kc ON kc.hash = lcr.reverter_hash
                      WHERE lcr.reverted_hash = ANY(:hashes)
+                       AND kc.subject NOT LIKE '[stub upstream%'
                     LIMIT 20
                 """), {"hashes": list(commit_hashes.keys())}).fetchall()
                 for r in rows:

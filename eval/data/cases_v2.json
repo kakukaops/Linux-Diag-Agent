@@ -9,12 +9,11 @@
     "question": "v6.6 OLK kernel: Out of memory kill of process 'java' with oom_score 800. cgroup memory limit 4GB hit. How to diagnose?",
     "expected_commit_hashes": [
       "892962a260268edda0648e02b3dc9664d06432c1",
-      "038ff4e1f9a3f87703790a75985e52c4b8d9ba5f",
-      "5647e53f7856bb39dae781fe26aa65a699e2fc9f"
+      "038ff4e1f9a3f87703790a75985e52c4b8d9ba5f"
     ],
     "expected_bug_ids": [],
     "ground_truth_root_cause": "OOM kill triggered by cgroup memory.limit_in_bytes=4GB exhaustion; java process RSS 3.8GB exceeded limit. Caused by memcg accounting undercount or misconfigured limit without swap.",
-    "notes": "Classic memcg-triggered OOM kill"
+    "notes": "Classic memcg-triggered OOM kill | dropped 5647e53f7856 (2023 docs-only, not in LSC)"
   },
   {
     "id": "oom-002",
@@ -79,7 +78,8 @@
       1467
     ],
     "ground_truth_root_cause": "mysqld blocked in D state waiting on ext4 writeback I/O. Likely cause: disk/storage I/O hang (SAN timeout, disk failure, storage controller lockup), or ext4 journal flush blocking. Check storage path.",
-    "notes": "Hung task in ext4 writeback — I/O hang, not scheduler bug"
+    "notes": "Hung task in ext4 writeback — I/O hang, not scheduler bug | I/O backend hang, no kernel fix expected (storage/firmware)",
+    "no_commit_expected": true
   },
   {
     "id": "kasan-001",
@@ -117,20 +117,18 @@
   {
     "id": "panic-001",
     "category": "panic",
-    "kernel_version": "OLK-5.10",
+    "kernel_version": "OLK-6.6",
     "expected_route": "kernel",
     "expected_fault_kind": "panic",
-    "raw_input": "[    1.234567] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(254,0)\n[    1.234570] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 5.10.0-153.oe2203sp3.x86_64 #1\n[    1.234575] Call Trace:\n[    1.234580]  panic+0x10c/0x26f\n[    1.234585]  mount_block_root+0x193/0x220\n[    1.234590]  mount_root+0x15a/0x180\n[    1.234595]  prepare_namespace+0x148/0x190\n[    1.234600]  kernel_init_freeable+0x318/0x360\n[    1.234605]  kernel_init+0xe/0x120\n[    1.234610]  ret_from_fork+0x1f/0x30",
-    "question": "Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(254,0). OLK-5.10.",
+    "raw_input": "[    8.234567] XFS (sda3): Mounting V5 Filesystem\n[    8.245678] XFS (sda3): Starting recovery (logdev: internal)\n[    8.356789] XFS (sda3): Metadata corruption detected at xfs_sb_read_verify+0x1ac/0x1d0\n[  150.123456] INFO: task mount:1234 blocked for more than 120 seconds.\n[  150.123460]       Not tainted 6.6.0-28.0.0.34.oe2403.x86_64 #1\n[  150.123465] Call Trace:\n[  150.123470]  <TASK>\n[  150.123475]  __schedule+0x4c2/0x1320\n[  150.123480]  schedule+0x5e/0xd0\n[  150.123485]  xfs_buf_wait_unpin+0x9f/0x100\n[  150.123490]  xlog_recover_buffer_pass2+0x1bc/0x420\n[  150.123495]  xlog_recover_items_pass2+0x4f/0xa0\n[  150.123500]  xlog_recover+0x4c2/0x720\n[  150.123505]  xfs_log_mount+0x162/0x300\n[  150.123510]  xfs_mountfs+0x6b4/0xa80\n[  150.123515]  xfs_fs_fill_super+0x4f8/0xa10\n[  150.123520]  </TASK>\n[  330.456789] Kernel panic - not syncing: VFS: Unable to mount root fs\n",
+    "question": "OLK-6.6: kernel panic during boot — xfs mount of corrupt FS hangs in xlog_recover_buffer_pass2, then panics with Buffer I/O error. Why?",
     "expected_commit_hashes": [
-      "79b4e61657c682ac2809a670aea153d95b2e4e24",
-      "dba19fb8c8265bd66b689403c62ba87e74382425"
+      "da9b6a5c271405ab9fa942dca49b5e640f352e3d"
     ],
-    "expected_bug_ids": [
-      1291
-    ],
-    "ground_truth_root_cause": "Boot-time panic: VFS cannot find root block device (254,0 = dm-0, typically LVM). Root cause: missing dm/LVM driver in initramfs, or UUID/label mismatch in grub/dracut config after kernel update.",
-    "notes": "Boot failure: missing root device in initramfs"
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "XFS sb-recovery bug: when xlog_recover_do_reg_buffer hits an error after the superblock buffer log item has been initialised, the buffer is released without being added to the writeback list — leaving the buffer log item dangling and mount hangs in xfs_buf_wait_unpin. Fix: set the error and add the buffer to buffer_list so the normal write path can finish.",
+    "notes": "xfs sb-recover mount hang — 2024-07 OLK fix (replaces old 2023 GT that was outside our link_commit_symbol backfill window)",
+    "no_commit_expected": false
   },
   {
     "id": "panic-002",
@@ -229,5 +227,50 @@
     "ground_truth_root_cause": "NVMe controller I/O timeout causing block queue stall: blk_mq_get_tag blocked waiting for request tags because NVMe queue is full (controller not draining). Root cause: NVMe controller firmware issue, PCIe link instability, or high queue depth under sustained write load.",
     "notes": "NVMe I/O hang — blk-mq tag exhaustion after controller timeout",
     "no_commit_expected": true
+  },
+  {
+    "id": "syzbot-001",
+    "category": "io_hang",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "io_hang",
+    "raw_input": "INFO: task dhcpcd:4760 blocked for more than 143 seconds.\n      Not tainted 6.6.0-28.0.0.34.oe2403.x86_64 #1\ntask:dhcpcd          state:D stack:20672 pid:4760  tgid:4760  ppid:4759\nCall Trace:\n <TASK>\n __schedule+0x17e8/0x4a20\n schedule+0x14b/0x320\n schedule_preempt_disabled+0x13/0x30\n __mutex_lock+0x6a4/0xd70\n devinet_ioctl+0x2ce/0x1bc0\n inet_ioctl+0x3d7/0x4f0\n sock_do_ioctl+0x158/0x460\n sock_ioctl+0x629/0x8e0\n __se_sys_ioctl+0xfc/0x170\n do_syscall_64+0xf3/0x230\n </TASK>\n",
+    "question": "OLK-6.6: dhcpcd hung 143s in devinet_ioctl, stuck on mutex_lock. Is this a known kernel bug?",
+    "expected_commit_hashes": [
+      "d864319871b05fadd153e0aede4811ca7008f5d6"
+    ],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "Known syzbot bug 78761e13e81f4bfb: infinite loop in tcf_idr_check_alloc() holds the rtnl mutex, blocking all socket ioctl operations including devinet_ioctl. Fix: act_api: fix possible infinite loop in tcf_idr_check_alloc()",
+    "notes": "KG path test: find_similar_crashes signature match (this is a real syzbot bug 78761e13e81f4bfb in our DB) + find_syzbot_fixed_by_commit should surface d864319871b0"
+  },
+  {
+    "id": "cve-001",
+    "category": "security",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "generic",
+    "raw_input": "Security advisory mentions CVE-2024-26926: 'binder: check offset alignment in binder_get_object()'. We are running OLK-6.6 6.6.0-28.0.0.34.oe2403. Are we affected? Has it been backported?",
+    "question": "Is CVE-2024-26926 (binder offset alignment) patched in OLK-6.6? Which commits address it?",
+    "expected_commit_hashes": [
+      "aaef73821a3b0194a01bd23ca77774f704a04d40"
+    ],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "CVE-2024-26926 in Android binder driver: binder_get_object() dereferences an unaligned pointer leading to memory corruption. OLK-6.6 should have the upstream fix backported (or marked not-affected). Agent should call search_cve('CVE-2024-26926'), check link_commit_cve, then check_backport_status to verify.",
+    "notes": "KG path test: search_cve by ID + link_commit_cve reverse lookup + check_backport_status. CVE has 4 commits linked in link_commit_cve."
+  },
+  {
+    "id": "revert-001",
+    "category": "regression",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "generic",
+    "raw_input": "We see a crypto-related use-after-free trace in dmesg referencing the hisilicon SEC2 accelerator driver. A teammate suggested backporting commit 2a0cdac65f9c (\"crypto: hisilicon/sec2: fix memory use-after-free issue\") to our downstream 5.10. Is it safe?\n\n[12345.678901] ==================================================================\n[12345.678910] BUG: KASAN: use-after-free in sec_skcipher_callback\n[12345.678920] Call Trace:\n[12345.678925]  sec_skcipher_callback+0x4a/0x90 [hisi_sec2]\n[12345.678930]  sec_req_cb+0x6c/0xc0 [hisi_sec2]\n[12345.678935]  qm_work_process+0x158/0x250 [hisi_qm]\n",
+    "question": "Is it safe to backport commit 2a0cdac65f9c (crypto: hisilicon/sec2: fix memory use-after-free issue)?",
+    "expected_commit_hashes": [
+      "27a56c66cf641b1a107222cb902a23bc003aa41d"
+    ],
+    "expected_bug_ids": [],
+    "ground_truth_root_cause": "The proposed backport commit 2a0cdac65f9c was REVERTED upstream by 27a56c66cf64 ('Revert \"crypto: hisilicon/sec2: fix memory use-after-free issue\"') because the original fix introduced a regression. Agent must warn the user NOT to apply 2a0cdac65f9c alone — they need either the full set including the follow-up fix OR avoid the backport entirely.",
+    "notes": "KG path test: link_commit_revert reverse lookup. Agent should call get_regression_fixes(2a0cdac65f9c) or query link_commit_revert before recommending the backport."
   }
 ]

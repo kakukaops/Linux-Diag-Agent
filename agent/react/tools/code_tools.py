@@ -89,9 +89,14 @@ def _get_regression_fixes(*, commit_hash: str, **_: object) -> str:
         return f"error: {r['error']}"
     if not r["has_regression_fix"]:
         return f"No known regression introduced by {commit_hash!r}."
-    lines = [f"REGRESSION: {len(r['fixing_commits'])} commit(s) fix a regression from {r['commit_hash'][:12]}:"]
+    lines = [f"REGRESSION/REVERT: {len(r['fixing_commits'])} follow-up commit(s) for {r['commit_hash'][:12]}:"]
     for fc in r["fixing_commits"]:
-        lines.append(f"  {fc['hash'][:12]} [{fc['inclusion_type']}] {fc['subject']}")
+        kind = fc.get("kind", "fixes-trailer")
+        lines.append(f"  {fc['hash'][:12]} [{fc.get('inclusion_type') or '?'}] "
+                     f"({kind}) {fc['subject']}")
+    if any("reverted" in fc.get("kind", "") for fc in r["fixing_commits"]):
+        lines.append("⚠ WARNING: this commit was REVERTED. Do not recommend the original "
+                     "backport without addressing the revert.")
     return "\n".join(lines)
 
 

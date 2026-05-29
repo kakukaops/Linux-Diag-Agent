@@ -107,9 +107,38 @@ def get_regression_fixes(commit_hash: str) -> dict[str, Any]:
 
     fixing = [
         {"hash": r.hash, "subject": r.subject or "",
-         "inclusion_type": r.olk_inclusion_type}
+         "inclusion_type": r.olk_inclusion_type,
+         "kind": "fixes-trailer"}
         for r in rows
     ]
+
+    # v2.4 fix: also surface link_commit_revert entries. Pre-v2.4 this
+    # query only checked the Fixes: trailer; reverts via "Revert" subject
+    # were silently missed (Run-14 revert-001 went insufficient because
+    # the agent's get_regression_fixes returned "no regression" for a
+    # commit that WAS clearly reverted).
+    try:
+        with engine.connect() as conn:
+            rev_rows = conn.execute(text("""
+                SELECT kc.hash, kc.subject, kc.olk_inclusion_type, lcr.source
+                  FROM link_commit_revert lcr
+                  JOIN kernel_commit kc ON kc.hash = lcr.reverter_hash
+                 WHERE lcr.reverted_hash = :full
+                    OR lcr.reverted_hash LIKE substring(:full, 1, 12) || '%'
+                 LIMIT 20
+            """), {"full": full}).fetchall()
+    except Exception as exc:
+        logger.warning("get_regression_fixes revert-query failed: %s", exc)
+        rev_rows = []
+
+    for r in rev_rows:
+        fixing.append({
+            "hash": r.hash,
+            "subject": r.subject or "",
+            "inclusion_type": r.olk_inclusion_type,
+            "kind": f"reverted (source={r.source})",
+        })
+
     return {
         "commit_hash": full,
         "has_regression_fix": bool(fixing),

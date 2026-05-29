@@ -48,7 +48,7 @@ For each candidate fix commit:
 - `get_commit_diff(hash)` — look at the actual code change
 - `find_syzbot_fixed_by_commit(hash)` — does it fix any real syzbot bug? (strong corroboration)
 - `check_backport_status(upstream_sha, olk_version)` — confirm it's in / missing from this kernel
-- `get_regression_fixes(hash)` — verify the fix wasn't itself reverted
+- **`get_regression_fixes(hash)` — MANDATORY before recommending any backport.** This checks `link_commit_revert` and `link_commit_fixes` for follow-up trouble: was the candidate ITSELF reverted upstream? Did it introduce a regression that needed a further fix? **NEVER recommend a backport without running this check first.** If it returns a revert, your `<final_answer>` MUST warn the user and either (a) recommend the revert commit instead, or (b) tell them the original fix is unsafe.
 - `lookup_subsystem_owner(file_path)` — once you know which file the fix touches, look up the MAINTAINERS owner. The maintainer's authority + the file's `Status:` (Maintained / Orphan / Odd Fixes / etc.) is a strong signal for how reliable the diagnosis is. If the file is **Orphan** or **Odd Fixes**, flag that to the user — fixes there often take longer to land.
 
 ### Anti-patterns (your Run-11 audit caught these — don't repeat)

@@ -26,9 +26,15 @@ SAME_TRACE_DIFFERENT_ADDR = """\
 
 
 def test_normalize_removes_addresses():
+    """v2.4 update: addresses are now stripped to "" rather than "ADDR"
+    so the function-name extractor can place word boundaries around
+    `devinet_ioctl+0x...` etc. (Previously `devinet_ioctlADDR` was one
+    contiguous \\w+ run that the extractor couldn't split.)"""
     norm = normalize_stack(SAMPLE_TRACE)
     assert "ffff888012345678" not in norm
-    assert "ADDR" in norm
+    # The function names survive
+    assert "tcp_v4_do_rcv" in norm
+    assert "kasan_report" in norm
 
 
 def test_same_stack_same_signature():

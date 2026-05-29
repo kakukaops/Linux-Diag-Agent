@@ -225,10 +225,19 @@ def retrieve(state: dict) -> dict:
 # ── Routing helpers (T-002) ───────────────────────────────────────────────────
 
 
+_CVE_ID_RE = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+
+
 def _select_route(state: dict, fault_kind: str, *, has_events: bool) -> str:
     """ADR-023 routing: hardware signals first, then vmcore, change, kernel.
 
     Returns one of {hardware, kernel+vmcore, change, kernel, unknown}.
+
+    v2.4 fix: a free-form question that mentions a CVE ID (e.g.
+    "Is CVE-2024-26926 fixed in OLK-6.6?") now routes to kernel even
+    without dmesg events. Without this, Run-14 cve-001 fell through to
+    'unknown' — the toolset is the same but the route framing signals
+    "kernel investigation" to the agent.
     """
     if state.get("has_hardware_signal"):
         return "hardware"
@@ -236,6 +245,8 @@ def _select_route(state: dict, fault_kind: str, *, has_events: bool) -> str:
         return "kernel+vmcore"
     if _implies_recent_change(state):
         return "change"
+    if _CVE_ID_RE.search(state.get("raw_input", "") or ""):
+        return "kernel"
     if fault_kind == "generic" and not has_events:
         return "unknown"  # vague free-form question — expose the full toolset
     return "kernel"

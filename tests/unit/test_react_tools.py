@@ -25,7 +25,8 @@ def test_build_registry_has_all_categories():
             "get_regression_fixes", "get_function_source", "get_call_graph",
             "expand_query_from_symbol", "browse_subsystem_fixes",
             "find_commits_touching_symbol", "find_similar_crashes",
-            "get_patch_series", "find_syzbot_fixed_by_commit"} <= names
+            "get_patch_series", "find_syzbot_fixed_by_commit",
+            "lookup_subsystem_owner"} <= names
     # Category B
     assert {"parse_dmesg", "parse_sosreport", "extract_call_trace"} <= names
 
@@ -221,6 +222,74 @@ def test_find_commits_touching_symbol_empty():
         conn.execute.return_value.fetchall.return_value = []
         result = _find_commits_touching_symbol(symbol="nonexistent_sym_xyz")
     assert "no commits" in result.lower()
+
+
+def test_lookup_subsystem_owner_rejects_empty():
+    from agent.react.tools.code_tools import _lookup_subsystem_owner
+    assert "required" in _lookup_subsystem_owner(file_path="").lower()
+
+
+def test_lookup_subsystem_owner_rejects_spaces():
+    from agent.react.tools.code_tools import _lookup_subsystem_owner
+    # Spaces in a kernel file path are illegal — guard against accidental
+    # injection of free-form text by the LLM.
+    assert "must not" in _lookup_subsystem_owner(file_path="net/foo bar").lower()
+
+
+def test_lookup_subsystem_owner_returns_formatted_match():
+    """A real-data style test: pattern matching via SQL LIKE produces a
+    section + maintainer line."""
+    from agent.react.tools.code_tools import _lookup_subsystem_owner
+    import datetime as _dt
+
+    class _Row:
+        def __init__(self, **kw): self.__dict__.update(kw)
+
+    fake_rows = [
+        _Row(section="NETWORKING [TCP]", status="Maintained",
+             mailing_list="netdev@vger.kernel.org",
+             pattern="net/ipv4/tcp*.c", kind="F", plen=15,
+             people="Eric Dumazet <edumazet@google.com>"),
+        _Row(section="NETWORKING [GENERAL]", status="Maintained",
+             mailing_list="netdev@vger.kernel.org",
+             pattern="net/", kind="F", plen=4,
+             people="David Miller <davem@davemloft.net>"),
+    ]
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        conn = mock_eng.return_value.connect.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = fake_rows
+        out = _lookup_subsystem_owner(file_path="net/ipv4/tcp_output.c")
+    assert "NETWORKING [TCP]" in out
+    assert "Eric Dumazet" in out
+    # Most-specific section should appear before the broader fallback
+    assert out.find("NETWORKING [TCP]") < out.find("NETWORKING [GENERAL]")
+
+
+def test_lookup_subsystem_owner_honours_X_exclusion():
+    """An X: pattern excludes the matched section from the result."""
+    from agent.react.tools.code_tools import _lookup_subsystem_owner
+
+    class _Row:
+        def __init__(self, **kw): self.__dict__.update(kw)
+
+    fake_rows = [
+        _Row(section="NARROW DRIVER", status="Maintained", mailing_list="-",
+             pattern="net/ipv4/tcp_debug.c", kind="X", plen=21, people=""),
+        _Row(section="NETWORKING [TCP]", status="Maintained",
+             mailing_list="netdev@vger.kernel.org",
+             pattern="net/ipv4/tcp*.c", kind="F", plen=15,
+             people="Eric Dumazet <edumazet@google.com>"),
+        # NARROW DRIVER also has a wider F: pattern that would otherwise match
+        _Row(section="NARROW DRIVER", status="Maintained", mailing_list="-",
+             pattern="net/ipv4/", kind="F", plen=9, people="Owner <o@x>"),
+    ]
+    with patch("storage.pg.engine.get_engine") as mock_eng:
+        conn = mock_eng.return_value.connect.return_value.__enter__.return_value
+        conn.execute.return_value.fetchall.return_value = fake_rows
+        out = _lookup_subsystem_owner(file_path="net/ipv4/tcp_debug.c")
+    # NARROW DRIVER had an X: covering this file → dropped
+    assert "NARROW DRIVER" not in out
+    assert "NETWORKING [TCP]" in out
 
 
 def test_find_similar_crashes_rejects_empty_input():

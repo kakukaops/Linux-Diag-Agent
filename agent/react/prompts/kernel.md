@@ -49,6 +49,7 @@ For each candidate fix commit:
 - `find_syzbot_fixed_by_commit(hash)` — does it fix any real syzbot bug? (strong corroboration)
 - `check_backport_status(upstream_sha, olk_version)` — confirm it's in / missing from this kernel
 - `get_regression_fixes(hash)` — verify the fix wasn't itself reverted
+- `lookup_subsystem_owner(file_path)` — once you know which file the fix touches, look up the MAINTAINERS owner. The maintainer's authority + the file's `Status:` (Maintained / Orphan / Odd Fixes / etc.) is a strong signal for how reliable the diagnosis is. If the file is **Orphan** or **Odd Fixes**, flag that to the user — fixes there often take longer to land.
 
 ### Anti-patterns (your Run-11 audit caught these — don't repeat)
 

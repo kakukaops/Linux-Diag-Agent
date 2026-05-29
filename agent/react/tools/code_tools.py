@@ -769,6 +769,107 @@ GET_PATCH_SERIES = Tool(
 )
 
 
+def _lookup_subsystem_owner(*, file_path: str, **_: object) -> str:
+    """Look up MAINTAINERS ownership for a kernel file path.
+
+    Returns the matching sections (most-specific glob first) with their
+    maintainers, status, and mailing list. Multiple sections may cover
+    the same file (e.g. a driver-specific section + "NETWORKING [GENERAL]").
+    """
+    from sqlalchemy import text
+    from storage.pg.engine import get_engine
+
+    fp = (file_path or "").strip().lstrip("/")
+    if not fp:
+        return "error: file_path is required"
+    if " " in fp:
+        return "error: file_path must not contain spaces"
+
+    # MAINTAINERS glob → SQL LIKE: replace '*' with '%'; a pattern ending
+    # in '/' matches any descendant (treat as prefix); otherwise literal.
+    # Sort by pattern length DESC so the most-specific match wins.
+    sql = text("""
+        WITH globs AS (
+            SELECT msf.section_id, msf.pattern, msf.kind,
+                   CASE
+                     WHEN msf.pattern LIKE '%/' THEN msf.pattern || '%'
+                     ELSE replace(msf.pattern, '*', '%')
+                   END AS like_pat,
+                   length(msf.pattern) AS plen
+              FROM maintainer_section_file msf
+             WHERE msf.kind IN ('F','X')
+        )
+        SELECT ms.name AS section, ms.status, ms.mailing_list,
+               g.pattern, g.kind, g.plen,
+               COALESCE(
+                 (SELECT string_agg(
+                     COALESCE(msp.name,'?') || ' <' || COALESCE(msp.email,'-') || '>',
+                     '; ' ORDER BY msp.role, msp.email)
+                    FROM maintainer_section_person msp
+                   WHERE msp.section_id = ms.id),
+                 '(no maintainer listed)'
+               ) AS people
+          FROM globs g
+          JOIN maintainer_section ms ON ms.id = g.section_id
+         WHERE :path LIKE g.like_pat
+         ORDER BY g.plen DESC
+         LIMIT 8
+    """)
+    try:
+        with get_engine().connect() as conn:
+            rows = conn.execute(sql, {"path": fp}).fetchall()
+    except Exception as exc:
+        return f"DB error: {exc}"
+
+    # An X: pattern excludes this file from a section — drop any section
+    # where the matching X: pattern is more specific than its F: pattern.
+    excluded_sections: set[str] = set()
+    for r in rows:
+        if r.kind == "X":
+            excluded_sections.add(r.section)
+    keep = [r for r in rows if r.kind == "F" and r.section not in excluded_sections]
+    if not keep:
+        return (f"No MAINTAINERS section covers {fp!r} "
+                f"(or all matches are excluded by X: patterns).")
+
+    out = [f"MAINTAINERS coverage for {fp!r} (most-specific first):"]
+    for r in keep[:5]:
+        out.append(
+            f"  [{r.section[:34]:<34}] status={r.status or '?'}  "
+            f"list={r.mailing_list or '-'}  pattern={r.pattern!r}"
+        )
+        out.append(f"      {r.people}")
+    return "\n".join(out)
+
+
+LOOKUP_SUBSYSTEM_OWNER = Tool(
+    name="lookup_subsystem_owner",
+    description=(
+        "Given a kernel file path, return the MAINTAINERS sections that "
+        "cover it with their maintainers, status, and mailing list. Use "
+        "when your candidate fix touches a specific file and you want to "
+        "know who's the authoritative owner (for recommending review or "
+        "for understanding the subsystem's maintenance status). Patterns "
+        "follow MAINTAINERS glob semantics — '*' is matched, X: exclusions "
+        "are honoured. The most-specific match is listed first."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": ("Kernel-tree-relative file path, e.g. "
+                                "'net/ipv4/tcp_output.c' or "
+                                "'drivers/net/ethernet/intel/e1000e/netdev.c'"),
+            },
+        },
+        "required": ["file_path"],
+    },
+    fn=_lookup_subsystem_owner,
+    routes=_K,
+)
+
+
 def _find_syzbot_fixed_by_commit(*, commit_hash: str,
                                  limit: int = 10, **_: object) -> str:
     """Reverse-lookup of link_syzbot_commit: which syzbot bugs does this
@@ -870,5 +971,5 @@ ALL_CODE_TOOLS = [
     EXPAND_QUERY_FROM_SYMBOL, BROWSE_SUBSYSTEM_FIXES,
     FIND_COMMITS_TOUCHING_SYMBOL, FIND_SIMILAR_CRASHES,
     GET_PATCH_SERIES, FIND_SYZBOT_FIXED_BY_COMMIT,
-    GET_DEVICE_MAJOR_MAPPING,
+    LOOKUP_SUBSYSTEM_OWNER, GET_DEVICE_MAJOR_MAPPING,
 ]

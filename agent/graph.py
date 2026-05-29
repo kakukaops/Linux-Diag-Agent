@@ -24,6 +24,7 @@ from agent.triage.nodes import (
 )
 from agent.react.nodes import react_investigation
 from agent.diagnosis.nodes import bind_claims, generate_report
+from agent.dmesg_event_writer import write_dmesg_event
 
 
 def build_graph() -> Any:
@@ -43,6 +44,9 @@ def build_graph() -> Any:
     # ── Report phase (deterministic) ─────────────────────────────────────────
     graph.add_node("bind_claims", bind_claims)
     graph.add_node("generate_report", generate_report)
+    # v2.4 functional-closure: persist this session as a dmesg_event so
+    # future runs of find_similar_crashes can match against it.
+    graph.add_node("write_dmesg_event", write_dmesg_event)
 
     # ── Edges ────────────────────────────────────────────────────────────────
     graph.set_entry_point("parse_input")
@@ -53,7 +57,8 @@ def build_graph() -> Any:
     graph.add_edge("retrieve", "react_investigation")
     graph.add_edge("react_investigation", "bind_claims")
     graph.add_edge("bind_claims", "generate_report")
-    graph.add_edge("generate_report", END)
+    graph.add_edge("generate_report", "write_dmesg_event")
+    graph.add_edge("write_dmesg_event", END)
 
     # Wire PG checkpointer if available (WBS 7.12)
     try:

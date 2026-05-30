@@ -56,8 +56,12 @@ def _parse_sosreport(*, path: str, **_: object) -> str:
 def _extract_call_trace(*, text: str, **_: object) -> str:
     """Extract call trace frames from a kernel panic, oops, or BUG message."""
     import re
+    # Bug #85 fix: production dmesg lines start with `[12345.681001]` timestamp
+    # prefix. The previous regex required `^\s+` at line start and silently
+    # missed every real-world trace. Strip the timestamp first, then match.
+    _TIMESTAMP_RE = re.compile(r"^\[\s*[\d.]+\]\s*")
     _FRAME_RE = re.compile(
-        r"^\s+(?:\[<?[0-9a-f]+>?\]\s+)?(\w\S+\+0x[0-9a-f]+/0x[0-9a-f]+)",
+        r"^\s*(?:\[<?[0-9a-f]+>?\]\s+)?(\w\S+\+0x[0-9a-f]+/0x[0-9a-f]+)",
     )
     _START_RE = re.compile(r"Call Trace:", re.IGNORECASE)
     _END_RE = re.compile(r"^---\[.*\]---$|^$")
@@ -65,14 +69,17 @@ def _extract_call_trace(*, text: str, **_: object) -> str:
     frames: list[str] = []
     in_trace = False
     for line in text.splitlines():
-        if _START_RE.search(line):
+        # Strip kernel timestamp prefix if present so subsequent regexes
+        # see the same shape whether the input is raw or pre-stripped.
+        line_stripped = _TIMESTAMP_RE.sub("", line)
+        if _START_RE.search(line_stripped):
             in_trace = True
             continue
         if in_trace:
-            m = _FRAME_RE.match(line)
+            m = _FRAME_RE.match(line_stripped)
             if m:
                 frames.append(m.group(1))
-            elif frames and _END_RE.match(line.strip()):
+            elif frames and _END_RE.match(line_stripped.strip()):
                 break
     if not frames:
         return "No call trace found in text."

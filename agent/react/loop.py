@@ -71,6 +71,9 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
     fail_counts: Counter = Counter()   # (tool, args) → times it errored
     tokens_used = 0
     finalize_reminder_added = False
+    finalize_hallucination_retry = False  # one chance to recover from DSML
+                                          # tool-call hallucinations under
+                                          # tool_choice='none' (Bug #89).
     # v2.3: structured evidence (commit hashes) extracted from tool outputs.
     # Dedup while preserving first-seen order so the most-recently-found
     # candidates rank ahead of older ones.
@@ -86,10 +89,23 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
             messages.append(Message(
                 role="user",
                 content=(
-                    "<<system reminder>>: Investigation budget reached. "
-                    "Produce your final answer now using ONLY the evidence "
-                    "already gathered. Wrap it in <final_answer> or "
-                    "<insufficient_evidence>. Do NOT call any tools."
+                    "<<HARD CONSTRAINT — investigation budget exhausted>>\n"
+                    "Tool calling is now DISABLED. Your next response will be "
+                    "treated as the final report.\n\n"
+                    "VALID OUTPUT — exactly ONE of these, plain text only "
+                    "inside the tags:\n"
+                    "  <final_answer>...your conclusion based on the evidence "
+                    "already gathered above...</final_answer>\n"
+                    "  <insufficient_evidence>...what additional data is "
+                    "needed (vmcore / extra dmesg / kernel config)..."
+                    "</insufficient_evidence>\n\n"
+                    "FORBIDDEN — do NOT emit any of these in your output:\n"
+                    "  • tool-call syntax of ANY format (no <tool_calls>, no "
+                    "<｜｜DSML｜｜...>, no <invoke ...>, no JSON-RPC bodies)\n"
+                    "  • requests for 'one more search' / 'one more lookup'\n"
+                    "  • internal special tokens of any kind\n"
+                    "Synthesise the answer from what is ALREADY in the "
+                    "conversation. Re-querying the KG is not an option."
                 ),
             ))
             finalize_reminder_added = True
@@ -118,6 +134,54 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
             # → extracted 0 claims → groundedness='speculative' with 0/0
             # counts — surfaced by kasan-002 v2.3 smoke 2026-05-28).
             stripped = content.strip()
+
+            # Bug #89: under force_finalize + tool_choice='none' some models
+            # (DeepSeek-chat observed 2026-05-30 smoke) hallucinate tool-call
+            # syntax in TEXT instead of emitting <final_answer>. The output
+            # looks like '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke ...>'.
+            # This bypasses our verdict tags and the answer is lost. Detect
+            # the pattern and give the model ONE retry with a louder reminder.
+            has_valid_tag = ("<final_answer>" in content
+                             or "<insufficient_evidence>" in content)
+            looks_like_tool_call_hallucination = stripped and (
+                "DSML" in content
+                or "<tool_calls>" in content
+                or "<invoke " in content
+                or "tool_call_id" in content
+            )
+            if (force_finalize
+                    and looks_like_tool_call_hallucination
+                    and not has_valid_tag
+                    and not finalize_hallucination_retry):
+                finalize_hallucination_retry = True
+                messages.append(Message(role="assistant",
+                                        content=resp.content or ""))
+                messages.append(Message(
+                    role="user",
+                    content=(
+                        "<<HARD RESET — your last reply was INVALID>>\n"
+                        "You emitted tool-call syntax in the text body "
+                        "(DSML / <tool_calls> / <invoke>). That is forbidden "
+                        "under the budget-exhausted constraint.\n\n"
+                        "Reply NOW with EXACTLY one block, nothing else:\n"
+                        "  <final_answer>\n"
+                        "  ## Root Cause\n"
+                        "  ...one paragraph synthesised from the evidence "
+                        "ALREADY in this conversation...\n\n"
+                        "  ## Fix Recommendation\n"
+                        "  ...one paragraph...\n\n"
+                        "  ## Confidence\n"
+                        "  high|medium|low — and why\n"
+                        "  </final_answer>\n\n"
+                        "If the evidence is truly insufficient, use "
+                        "<insufficient_evidence>...</insufficient_evidence> "
+                        "instead. NO tool calls. NO special tokens."
+                    ),
+                ))
+                logger.info("react: force_finalize hallucination retry "
+                            "(DSML detected at step %d)", step)
+                continue
+
             if "<insufficient_evidence>" in content:
                 verdict = "insufficient_evidence"
             elif "<final_answer>" in content and stripped:
@@ -152,7 +216,12 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
             messages.append(Message(role="tool", tool_call_id=tc.id,
                                     name=name, content=content))
             trace.append({"step": step, "tool": name,
-                          "args": raw_args, "error": errored})
+                          "args": raw_args, "error": errored,
+                          # v2.4: keep a short result preview so post-hoc
+                          # process-compliance scoring can detect things like
+                          # "did get_regression_fixes return a revert warning,
+                          # and did the agent surface it in the final answer".
+                          "result_preview": (content or "")[:300]})
             # v2.3: harvest commit hashes from this tool's output. Regex
             # matches both short (12) and full (40) lowercase hex hashes; we
             # store the 12-prefix as the canonical key (matches recall@10's

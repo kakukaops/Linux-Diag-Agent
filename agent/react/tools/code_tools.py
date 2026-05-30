@@ -102,15 +102,30 @@ def _get_regression_fixes(*, commit_hash: str, **_: object) -> str:
 
 def _get_function_source(*, func_name: str, kernel_version: str | None = None,
                          **_: object) -> str:
-    """Retrieve kernel function source code via CodeGraph."""
-    from clients.codegraph.client import get_codegraph_client, CodeGraphError
+    """Retrieve kernel function source code via CodeGraph.
+
+    Bug #88 fix: previously used `search_code(f"func {func_name}")`, a literal
+    "func " prefix that CodeGraph doesn't recognise — it returned 0 hits even
+    when get_call_graph (which uses the SCIP path) reported the function was
+    indexed. Switch to `lookup_symbol(action="definition")` so both tools use
+    the same SCIP definition lookup entry, then fall back to search_code on
+    miss.
+    """
+    from clients.codegraph.client import (get_codegraph_client, CodeGraphError,
+                                           _get_text_content)
     try:
         client = get_codegraph_client()
-        hits = client.search_code(
-            f"func {func_name}",
-            version_hint=kernel_version,
-            limit=5,
-        )
+        repo = client.resolve_repo(kernel_version)
+        args: dict = {"symbol": func_name, "action": "definition"}
+        if repo:
+            args["repos"] = [repo]
+        result = client.passthrough("lookup_symbol", args)
+        source = _get_text_content(result) or ""
+        if source.strip():
+            return source[:3000]
+        # Fallback: BM25 search (no special prefix; CodeGraph treats the bare
+        # symbol as a keyword).
+        hits = client.search_code(func_name, version_hint=kernel_version, limit=5)
     except CodeGraphError as exc:
         return f"CodeGraph unavailable: {exc}"
     if not hits:
@@ -407,16 +422,37 @@ def _get_call_graph(*, func_name: str,
                     direction: str = "callers",
                     kernel_version: str | None = None,
                     **_: object) -> str:
-    """Get callers or callees of a kernel function via CodeGraph PageIndex."""
-    from clients.codegraph.client import get_codegraph_client, CodeGraphError
+    """Get callers or callees of a kernel function via CodeGraph SCIP.
+
+    Bug #87 fix: previous implementation called page_index_walk regardless of
+    `direction`, so direction='callers' and direction='callees' returned
+    identical content. Now:
+      - direction='callers'  → lookup_symbol(action='references') — SCIP cross-
+        references find every call site of this function.
+      - direction='callees'  → fetch the function's own definition (callers of
+        symbols WITHIN the body would require a second SCIP pass that's not
+        currently exposed; return the source so the LLM can read the call list
+        itself).
+    """
+    if direction not in ("callers", "callees"):
+        return f"error: direction must be 'callers' or 'callees' (got {direction!r})"
+    from clients.codegraph.client import (get_codegraph_client, CodeGraphError,
+                                           _get_text_content)
     try:
         client = get_codegraph_client()
-        result = client.page_index_walk(func_name, symbol=func_name,
-                                        version_hint=kernel_version)
-        raw = result.get("raw", "")
-        if not raw:
-            return f"No call graph data for {func_name!r}."
-        return raw[:2000]
+        repo = client.resolve_repo(kernel_version)
+        action = "references" if direction == "callers" else "definition"
+        args: dict = {"symbol": func_name, "action": action}
+        if repo:
+            args["repos"] = [repo]
+        result = client.passthrough("lookup_symbol", args)
+        raw = _get_text_content(result) or ""
+        if not raw.strip():
+            return (f"No {direction} found for {func_name!r}. "
+                    f"(SCIP action={action}, repo={repo or 'unresolved'})")
+        header = (f"### {direction.title()} of {func_name} "
+                  f"(SCIP action={action}):\n\n")
+        return header + raw[:2000]
     except CodeGraphError as exc:
         return f"CodeGraph unavailable: {exc}"
 

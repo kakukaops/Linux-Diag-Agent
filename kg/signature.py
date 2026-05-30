@@ -112,6 +112,26 @@ _INTERNAL_FRAMES = frozenset({
     "do_syscall_x64", "entry_SYSCALL_64", "entry_SYSCALL_64_after_hwframe",
     # fork / kthread / asm entry
     "ret_from_fork", "ret_from_fork_asm", "kthread", "kernel_init",
+    # Bug #86 fix: GENERIC DIAGNOSTIC frames. These print on every kind of
+    # crash — softlockup, OOM, panic, BUG, WARN — and therefore add zero
+    # signal to the signature. Without them filtered, an OOM trace and a
+    # JFFS hungtask trace collapsed to the same top-4 hash because both
+    # started with dump_stack_lvl/dump_header. Surfaced by 2026-05-30 smoke.
+    "dump_stack", "dump_stack_lvl", "dump_stack_print_info",
+    "show_stack", "show_regs", "show_trace_log_lvl",
+    "dump_header", "dump_tasks", "dump_unreclaimable_slab",
+    "__warn", "__warn_printk", "warn_slowpath_fmt", "warn_alloc",
+    "report_bug", "handle_bug", "do_trap", "do_error_trap",
+    "panic", "__panic", "panic_print_sys_info",
+    "printk", "_printk", "vprintk_emit", "vprintk_default",
+    "console_unlock", "irq_work_run",
+    # exception-entry plumbing (the actual crash site is further down)
+    "asm_exc_page_fault", "exc_page_fault", "do_user_addr_fault",
+    "asm_exc_general_protection", "exc_general_protection",
+    "asm_exc_invalid_op", "exc_invalid_op",
+    # watchdog / softlockup machinery
+    "watchdog_handler", "watchdog_timer_fn", "softlockup_fn",
+    "rcu_dump_cpu_stacks", "nmi_cpu_backtrace",
 })
 
 # Non-function tokens that the regex would otherwise pick up.

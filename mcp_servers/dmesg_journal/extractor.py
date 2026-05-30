@@ -55,8 +55,21 @@ _OOPS_RE = re.compile(r"Oops:\s*(\S+)", re.IGNORECASE)
 _BUG_RE = re.compile(r"BUG:?\s+(.+?)(?:\n|$)", re.IGNORECASE)
 _WARN_RE = re.compile(r"WARNING:?\s+(.+?)(?:\n|$)", re.IGNORECASE)
 _PANIC_RE = re.compile(r"Kernel panic[- ]+not syncing:\s*(.+?)(?:\n|$)", re.IGNORECASE)
+# Bug #84 fix: kernel 5.x emitted "Out of memory: Kill process N (comm) score N",
+# but 6.x emits "Out of memory: Killed process N (comm) total-vm:NkB...". The
+# canonical OOM head line `oom-kill:constraint=...,task=comm,pid=N` is the most
+# reliable signal across versions (always present on memcg / global OOM). Try
+# all three in order; "score" is optional metadata.
+_OOM_CONSTRAINT_RE = re.compile(
+    r"oom-kill:constraint=(\S+?),.*?task=(\S+),\s*pid=(\d+)",
+    re.IGNORECASE,
+)
+_OOM_KILLED_RE = re.compile(
+    r"Out of memory:\s+Killed\s+process\s+(\d+)\s+\((\S+)\)",
+    re.IGNORECASE,
+)
 _OOM_RE = re.compile(
-    r"Out of memory: Kill process (\d+) \((\S+)\) score (\d+)",
+    r"(?:Out of memory:\s+)?Kill process\s+(\d+)\s+\((\S+)\)\s+score\s+(\d+)",
     re.IGNORECASE,
 )
 # Page allocation failure — memory pressure event in same family as OOM.
@@ -106,15 +119,36 @@ def _match_event(
         raw, trace = _collect_block(lines, idx)
         return KernelEvent(EventKind.panic, f"Kernel panic: {m.group(1)}", raw, trace)
 
+    # OOM detection (Bug #84): try the canonical constraint line first, then
+    # the modern "Killed process" form, then the legacy "Kill process ... score".
+    m = _OOM_CONSTRAINT_RE.search(stripped)
+    if m:
+        raw, trace = _collect_block(lines, idx, max_lines=30)
+        return KernelEvent(
+            EventKind.oom,
+            f"OOM kill: constraint={m.group(1)} task={m.group(2)} pid={m.group(3)}",
+            raw, trace,
+            metadata={"constraint": m.group(1), "comm": m.group(2),
+                      "pid": m.group(3)},
+        )
+    m = _OOM_KILLED_RE.search(stripped)
+    if m:
+        raw, trace = _collect_block(lines, idx, max_lines=30)
+        return KernelEvent(
+            EventKind.oom,
+            f"OOM kill: pid={m.group(1)} ({m.group(2)})",
+            raw, trace,
+            metadata={"pid": m.group(1), "comm": m.group(2)},
+        )
     m = _OOM_RE.search(stripped)
     if m:
         raw, trace = _collect_block(lines, idx, max_lines=30)
         return KernelEvent(
             EventKind.oom,
             f"OOM kill: pid={m.group(1)} ({m.group(2)}) score={m.group(3)}",
-            raw,
-            trace,
-            metadata={"pid": m.group(1), "comm": m.group(2), "score": int(m.group(3))},
+            raw, trace,
+            metadata={"pid": m.group(1), "comm": m.group(2),
+                      "score": int(m.group(3))},
         )
 
     m = _ALLOC_FAIL_RE.search(stripped)

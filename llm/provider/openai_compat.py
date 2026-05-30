@@ -49,9 +49,22 @@ class OpenAICompatProvider:
         api_key = (_read_api_key("OPENAI_API_KEY", "OPENAI_COMPAT_API_KEY")
                    or cfg.llm.endpoints.api_key
                    or "none")
+        # v2.4: explicit httpx client with trust_env=False so we DON'T pick up
+        # the host's HTTPS_PROXY/ALL_PROXY env vars when calling LLM endpoints.
+        # In WSL the proxy is for restricted external sites; LLM APIs
+        # (DeepSeek / OpenRouter / OpenAI / vLLM) are directly reachable and
+        # routing them through the proxy adds latency + occasional 5xx.
+        import httpx
+        http_client = httpx.Client(
+            trust_env=False,
+            timeout=httpx.Timeout(role_cfg.timeout_seconds, connect=10.0),
+        )
         # max_retries=0: disable SDK auto-retry so our application-level retry
         # (with rate-limiter re-acquire) is the only retry path.
-        self._client = openai.OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+        self._client = openai.OpenAI(
+            base_url=base_url, api_key=api_key,
+            max_retries=0, http_client=http_client,
+        )
 
         # Shared account-level per-minute limiter (keyed by endpoint URL so all
         # roles using the same API share one counter, preventing total > rpm).
@@ -198,8 +211,13 @@ def _build_params(req: ChatRequest, default_model: str) -> dict:
         "messages": messages,
         "temperature": req.temperature,
     }
-    if req.max_tokens:
-        params["max_tokens"] = req.max_tokens
+    # v2.4: cap max_tokens. OpenRouter reserves credit for the model's full
+    # output budget (e.g. 65K+) when max_tokens isn't specified — this
+    # triggered 402 "Insufficient credits" errors on Run-17 intrinsic-002.
+    # 4K is the sweet spot: a ReAct step never emits more (tool call ≤ 500
+    # tokens, final answer ≤ 3K) and it stays affordable even on a near-empty
+    # OpenRouter balance.
+    params["max_tokens"] = req.max_tokens or 4_000
     if req.tools:
         params["tools"] = [t.model_dump() for t in req.tools]
     if req.tool_choice is not None:

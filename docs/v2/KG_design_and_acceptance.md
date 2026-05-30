@@ -119,14 +119,60 @@ bug 引用走 gitee/atomgit 而非 bugzilla.kernel.org（ADR-022 才补上）。
 
 ### 端到端集成 KPI（最终用户体感）
 
-- **v2 eval recall@10**（仅看有 GT commit 的 case）≥ **40 %**
-- **find_commits_touching_symbol 命中率**（GT 在 top-10 of reverse lookup）≥ **60 %**
-- **grounded_rate** ≥ **50 %**（of diagnosed cases）
-- **grounded + judge-correct rate** ≥ **25 %**（最严指标）
-- **abstention_rate**（主动 `<insufficient_evidence>`）≥ **10 %** 且 < **40 %**
+#### 2026-05-30 重新定义：以"流程合规度"为 PRIMARY KPI
+
+Run 9-17 的复盘暴露一个根本问题：**LLM 输出的非确定性主导了"正确率"类
+指标的方差**。Run 17 三折平均下来，22 个 case 里只有 2 个能在三次都判对，
+其余 73 % 在三折间漂移；recall@10 = 5.6 % 的同时 grounded_correct 在
+0 %~50 % 之间剧烈跳变。继续追这些指标本质是在拟合一个噪声极大的目标
+函数。
+
+**用户的重新定义（在系统设计的初衷里）**：
+> "我们的测试应该是：用户的每次提问，我们都按诊断流程调查了所有的知识
+> 图谱就对了，至于诊断结果，只要严格按照我们的流程在做，都可以算作正确。"
+
+对应的工程化指标如下。
+
+##### Primary KPI · 流程合规度（确定性，可控）
+
+只看 agent **调用了哪些 KG 工具**，不检查答案文本。指标全部从
+`react_tool_trace` 派生——不依赖 LLM judge，不依赖 GT，重跑 trace 得到
+完全一致分数。
+
+| 指标 | 定义 | 目标 | 实现 |
+|---|---|---|---|
+| **Phase coverage**（语料级） | kernel.md 五个阶段（Phase 0 similar_crashes / Phase 1 symbol_lookup / Phase 2 BM25 / Phase 3 browse_subsystem / Phase 4 regression_check）中实际调用了多少 | ≥ **80 %** | `_compute_process_compliance` 按 `_PHASE_TOOL_MAP` 计数 |
+| **Per-case KG path coverage**（case 级） | 每个 case 在数据里声明 `expected_kg_paths`，agent 实际调用了其中多少比例 | ≥ **80 %** | `_coverage()` per case，summary 取均值 |
+
+> **历史教训**：早期版本曾把"答案是否含 `## Fix Recommendation` 头 / KG-silent
+> 标签 / revert 警告"也列为 Primary KPI（Run 18 框架）。Run 19/20 加 retry
+> 强制后副作用明显——模型被"敦促"改投 `<insufficient_evidence>`，diagnosed
+> 数量腰斩。这种"凑答案格式"违背了"测试只看流程合规度"的初衷，已于
+> 2026-05-30 全部回滚。**输出格式只是 prompt 提示，不参与打分**。
+
+##### Secondary KPI · 输出质量（LLM-noisy，仅作诊断参考）
+
+下列指标继续打印但**不再用于版本验收**——它们的方差大到无法支持"通过/
+未通过"的判断，更适合 case-by-case 看为什么某个 case 出错。
+
+- v2 eval `recall@10` — 仍跑，但只看趋势
+- `grounded_rate` / `grounded_correct_rate` — 仅作健康检查
+- `route_accuracy` / `fault_kind_accuracy` — triage 阶段确定性较高，保留
+- `abstention_rate` — 仍是反过度自信的好指标，但目标范围放宽到 5 %~50 %
+
+##### N-fold 评测说明
+
+N-fold（默认 3 折）解决"测量噪声"问题：同一 case 跑 3 次取多数票，能识别
+"流程稳定但答案漂移"的 case。它**不**解决生产可靠性——生产侧每个请求都
+是单次执行，三折投票只在评测语境下有意义。
+
+---
+
+### 历史基线（v2.3 输出质量参考，已降级为次级指标）
 
 > v2.3 当前：recall@10 ≈ 5.6 %（基线），grounded_rate 20 %，
-> grounded+correct 0 %。**全部低于上述目标**。这是后续 v2.4 攻关方向。
+> grounded+correct 在三折间 0 %~50 % 剧烈跳变。这些数字现在仅用于诊断
+> 趋势，不作为版本验收门槛——见上文"重新定义"段。
 
 ---
 

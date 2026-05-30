@@ -223,9 +223,20 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
                 "tool": t.get("tool"),
                 "args": (t.get("args") or "")[:500],  # truncate huge JSONs
                 "error": t.get("error", False),
+                "result_preview": (t.get("result_preview") or "")[:300],
             }
             for t in tool_trace
         ],
+        # v2.4 process-compliance metrics (PRIMARY KPI per user reframing):
+        # process compliance is deterministic; output quality is LLM-noisy.
+        # We grade whether the agent traversed Phase 0-6 of kernel.md and
+        # produced a structured final answer — independent of whether the
+        # answer happens to be correct.
+        **_compute_process_compliance(
+            final_answer=state.get("react_final_answer") or state.get("final_analysis") or "",
+            tool_trace=tool_trace,
+            react_verdict=react_verdict,
+        ),
         # Evidence quality
         "evidence_count": len(evidence),
         "recall_at_10": round(recall, 3) if recall is not None else None,
@@ -249,6 +260,57 @@ def _run_case(case: dict[str, Any], *, use_judge: bool = True) -> dict[str, Any]
         "react_final_answer": (state.get("react_final_answer") or "")[:4000],
         "final_analysis": (state.get("final_analysis") or "")[:4000],
         "error": state.get("error"),
+    }
+
+
+_PHASE_TOOL_MAP = {
+    # kernel.md Phase 0-4 → expected primary tool(s). A phase counts as
+    # "traversed" if any of its mapped tools was called without erroring.
+    # This is the PROCESS-compliance signal: did the agent walk the
+    # investigation flow we designed? It deliberately does NOT inspect
+    # the answer text — that is output cosmetics, not process.
+    "phase_0_similar_crashes": {"find_similar_crashes"},
+    "phase_1_symbol_lookup": {"find_commits_touching_symbol", "lookup_symbol"},
+    "phase_2_bm25_search": {"search_commits", "search_lkml",
+                            "search_bugs", "search_syzbot",
+                            "search_cve", "search_code"},
+    "phase_3_browse_subsystem": {"browse_subsystem_fixes"},
+    "phase_4_regression_check": {"get_regression_fixes"},
+}
+
+
+def _compute_process_compliance(
+    final_answer: str,
+    tool_trace: list[dict],
+    react_verdict: str,
+) -> dict[str, Any]:
+    """Process-compliance scoring (PRIMARY KPI).
+
+    Per the user's framing (2026-05-30): "the test should grade whether the
+    agent walked the KG paths per our diagnostic flow — the result text
+    itself is secondary." So this function looks ONLY at the tool calls.
+
+    Output-format checks (does the answer contain a Fix-Recommendation
+    header, KG-silent label, etc.) were tried in Run 19/20 and rolled back —
+    they actively pushed the model to game cosmetics rather than follow the
+    process, which is exactly what the user warned against.
+
+    Per-case "expected_kg_paths_coverage" (see _coverage above) is the
+    finer-grained sibling: each case declares which specific paths it
+    expects, and we measure whether the agent walked them. This function
+    is the corpus-wide rollup.
+    """
+    tools_ok = {t.get("tool") for t in tool_trace if not t.get("error")}
+
+    phases_traversed = {
+        name: bool(tools_ok & expected) for name, expected in _PHASE_TOOL_MAP.items()
+    }
+    n_phases = sum(1 for v in phases_traversed.values() if v)
+
+    return {
+        "phases_traversed": phases_traversed,
+        "n_phases_traversed": n_phases,
+        "phase_coverage": round(n_phases / len(_PHASE_TOOL_MAP), 3),
     }
 
 
@@ -437,6 +499,9 @@ def _zero_metrics() -> dict:
         "root_cause_correct": None,
         "judge_reasoning": None,
         "report_md_length": 0,
+        "phases_traversed": {n: False for n in _PHASE_TOOL_MAP},
+        "n_phases_traversed": 0,
+        "phase_coverage": 0.0,
     }
 
 
@@ -570,13 +635,40 @@ def _compute_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
                       len(cov_rs), 3) if cov_rs else None),
         }
 
+    # PRIMARY KPI — PROCESS COMPLIANCE (user's framing 2026-05-30):
+    # "grade whether the agent walked our KG-investigation flow; the
+    #  answer text itself is secondary".
+    # Two complementary signals are reported as PRIMARY:
+    #   1. avg_phase_coverage    — Phase 0-4 tool calls (corpus-wide)
+    #   2. avg_kg_path_coverage  — per-case expected_kg_paths_coverage
+    #      (more granular: each case declares its own expected paths)
+    # Output-format checks (Fix-Recommendation header, KG-silent label)
+    # were tried in Run 19/20 and rolled back — they led the model to
+    # game cosmetics, not follow the process.
+    avg_phase_coverage = avg("phase_coverage")
+    phase_traversal_counts = {n: 0 for n in _PHASE_TOOL_MAP}
+    for r in ok:
+        for phase_name, hit in (r.get("phases_traversed") or {}).items():
+            if hit:
+                phase_traversal_counts[phase_name] += 1
+    phase_traversal_rates = {
+        name: round(c / len(ok), 3) if ok else 0.0
+        for name, c in phase_traversal_counts.items()
+    }
+
     return {
         "total": n,
         "errors": len(errors),
+        # ── PRIMARY KPI: process compliance (KG-path traversal) ──
+        "process_compliance": {
+            "avg_phase_coverage": avg_phase_coverage,
+            "phase_traversal_rates": phase_traversal_rates,
+            "avg_kg_path_coverage": avg_kg_coverage,
+            "kg_coverage_scored_n": len(coverage_scored),
+        },
+        # ── SECONDARY KPI: output quality (LLM-noisy, diagnostic only) ──
         "avg_recall_at_10": avg("recall_at_10"),
         "recall_scored_n": len(recall_scored),
-        "avg_kg_path_coverage": avg_kg_coverage,
-        "kg_coverage_scored_n": len(coverage_scored),
         "per_goal": goal_breakdown,
         "avg_traceability": avg("traceability"),
         "avg_elapsed_ms": avg("elapsed_ms"),
@@ -642,6 +734,30 @@ def _print_case_result(r: dict) -> None:
 def _print_summary(s: dict) -> None:
     print(f"\n{'='*70}")
     print(f"v2 Eval Summary  ({s['total']} cases, {s.get('errors',0)} errors)")
+
+    # ── PRIMARY KPI: PROCESS COMPLIANCE (KG-path traversal) ──
+    pc = s.get("process_compliance") or {}
+    if pc:
+        print(f"")
+        print(f"  ╔═ PRIMARY KPI · PROCESS COMPLIANCE (KG-path traversal) ═══════╗")
+        cov = pc.get("avg_phase_coverage")
+        print(f"  ║  Avg phase coverage:        "
+              f"{cov:.1%}  (of 5 investigative phases, corpus-wide)" if cov is not None
+              else "  ║  Avg phase coverage:        n/a")
+        rates = pc.get("phase_traversal_rates", {})
+        for phase_name, rate in rates.items():
+            print(f"  ║    {phase_name:<30} {rate:.0%}")
+        kcov = pc.get("avg_kg_path_coverage")
+        kn = pc.get("kg_coverage_scored_n", 0)
+        if kcov is not None:
+            print(f"  ║  Per-case KG path coverage: {kcov:.1%}  "
+                  f"(over {kn} cases with expected_kg_paths)")
+        else:
+            print(f"  ║  Per-case KG path coverage: n/a")
+        print(f"  ╚═══════════════════════════════════════════════════════════════╝")
+
+    print(f"")
+    print(f"  ── Secondary (LLM-noisy, diagnostic only) ─────────────────────")
     scored_n = s.get("recall_scored_n", 0)
     if scored_n:
         print(f"  Recall@10:           {s.get('avg_recall_at_10', 0):.1%}  "
@@ -660,20 +776,11 @@ def _print_summary(s: dict) -> None:
     print(f"  ★ Grounded+Correct:  {s['grounded_correct_rate']:.1%} (judge ✓ AMONG grounded — strictest)" if s.get('grounded_correct_rate') is not None else "  ★ Grounded+Correct:  n/a")
     print(f"  Avg verified-claim:  {s['avg_verified_claim_rate']:.1%}" if s.get('avg_verified_claim_rate') is not None else "  Avg verified-claim:  n/a")
     print(f"  Judge uncertain:     {s['judge_uncertain_rate']:.1%} (dual judges disagreed)" if s.get('judge_uncertain_rate') is not None else "  Judge uncertain:     n/a")
-    print(f"")
-    # v2.4 KG-path coverage (Goal-1 lens — how thoroughly the agent
-    # used the available knowledge graph paths).
-    cov = s.get("avg_kg_path_coverage")
-    cov_n = s.get("kg_coverage_scored_n", 0)
-    if cov is not None:
+    # Per-goal breakdown — KG-path coverage already reported under PRIMARY KPI.
+    per_goal = s.get("per_goal") or {}
+    if per_goal:
         print(f"")
-        print(f"  ── KG-path coverage (v2.4 Goal-1: did agent use available paths?) ─")
-        print(f"  KG path coverage:    {cov:.1%}  "
-              f"(over {cov_n} cases with expected_kg_paths)")
-        # Also break out by primary_goal so Goal-1 vs Goal-3 don't wash out
-        per_goal = s.get("per_goal") or {}
-        print(f"")
-        print(f"  ── Per primary_goal (v2.4 three-goal lens) ─────────────────────")
+        print(f"  ── Per primary_goal (three-goal lens, secondary) ───────────────")
         for goal, d in sorted(per_goal.items()):
             gc = d.get("grounded_correct_rate")
             gc_s = f"grounded+correct={gc:.0%}" if gc is not None else "g+c=n/a"

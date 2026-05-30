@@ -42,7 +42,20 @@ _CHANGE_RE = re.compile(
 def parse_input(state: dict) -> dict:
     """Detect whether raw_input is a dmesg blob, file path, or free-form question."""
     raw = state.get("raw_input", "")
-    p = Path(raw.strip()) if len(raw) < 500 else None
+    stripped = raw.strip()
+    # v2.4: only treat input as a potential path if it actually looks like one
+    # — no whitespace / newlines / question marks. Otherwise calling
+    # `Path(raw).exists()` on a 250+ char prose blob crashes with ENAMETOOLONG
+    # (file-name length limit is 255 on Linux). Run-17 intrinsic-004 hit
+    # this when a 294-char free-form question was fed in.
+    path_shape = (
+        0 < len(stripped) < 260
+        and " " not in stripped
+        and "\n" not in stripped
+        and "?" not in stripped
+        and stripped.count("/") <= 12
+    )
+    p = Path(stripped) if path_shape else None
 
     if p and p.exists() and p.is_file():
         if "sosreport" in p.name.lower() or p.suffix in (".xz", ".gz", ".bz2"):

@@ -92,17 +92,65 @@ def _search_cve(*, cve_id: str | None = None, keywords: str = "",
 
 def _search_code(*, query: str, kernel_version: str | None = None,
                  limit: int = 10, **_: object) -> str:
+    """CodeGraph BM25 search, with automatic single-token fallback.
+
+    CodeGraph's BM25 endpoint is AND-matched: every term must appear in the
+    same file. When the LLM passes a multi-word query like
+    "try_charge_memcg mem_cgroup_out_of_memory" or
+    "CONFIG_MEMCG_QOS fine grained stall memcontrol OLK", the AND
+    intersection is almost always empty even though each token individually
+    has many hits. Without a fallback we'd return "No results" and the LLM
+    would never see the useful per-token hits.
+
+    Strategy:
+      1. Try the full query as-is (preserves precision for users who know
+         the AND semantics or pass a single token).
+      2. If hits=0 AND the query has >1 alphanumeric tokens, retry each
+         token alone, take the top hits, merge unique by file path.
+    """
     from clients.codegraph.client import get_codegraph_client, CodeGraphError
+    import re
     try:
         client = get_codegraph_client()
         hits = client.search_code(query, version_hint=kernel_version, limit=limit)
+        fallback_used = False
+        if not hits:
+            tokens = [t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)
+                      if t.lower() not in {"the", "and", "for", "with", "from",
+                                            "into", "this", "that", "have",
+                                            "kernel", "olk"}]
+            if len(tokens) > 1:
+                seen: set[str] = set()
+                merged: list[dict] = []
+                per_tok = max(2, limit // max(len(tokens), 1))
+                for tok in tokens[:6]:  # cap to 6 tokens to bound cost
+                    for h in client.search_code(tok, version_hint=kernel_version,
+                                                 limit=per_tok):
+                        key = (h.get("file") or "") + "::" + (h.get("snippet") or "")[:50]
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        merged.append({**h, "_matched_token": tok})
+                        if len(merged) >= limit:
+                            break
+                    if len(merged) >= limit:
+                        break
+                if merged:
+                    hits = merged
+                    fallback_used = True
     except CodeGraphError as exc:
         return f"CodeGraph unavailable: {exc}"
     if not hits:
-        return "No code results found."
+        return ("No code results found. Note: search_code requires ALL "
+                "terms to appear in the same file. Try a single keyword "
+                "(function name, macro, struct) instead of a phrase.")
     parts = []
+    if fallback_used:
+        parts.append("(Multi-word query had 0 AND-match hits; falling back "
+                     "to per-token search and merging top results.)")
     for i, h in enumerate(hits, 1):
-        parts.append(f"[{i}] {h.get('file', '')} (score={h.get('score', 0):.0f})")
+        tag = f" via '{h['_matched_token']}'" if h.get("_matched_token") else ""
+        parts.append(f"[{i}] {h.get('file', '')} (score={h.get('score', 0):.0f}){tag}")
         if h.get("snippet"):
             parts.append("    " + h["snippet"][:200].replace("\n", " "))
     return "\n".join(parts)
@@ -219,13 +267,23 @@ SEARCH_CODE = Tool(
     name="search_code",
     description=(
         "BM25 keyword search over the OLK kernel source via CodeGraph. "
-        "Returns file paths and code snippets. Use when you need to find "
-        "where a function, macro, or data structure is defined."
+        "Returns file paths and code snippets. Use to find where a "
+        "function, macro, or data structure is defined / referenced.\n\n"
+        "QUERY SEMANTICS — IMPORTANT: terms are AND-matched (every "
+        "token must appear in the same file). Best results come from a "
+        "SINGLE identifier ('try_charge_memcg', 'CONFIG_MEMCG_QOS', "
+        "'mem_cgroup_charge'). Multi-word natural-language queries "
+        "like 'memcg OOM during reclaim' will usually return 0 hits "
+        "directly — the tool falls back to per-token search and merges "
+        "results, but a single-token query is faster and more precise."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Search query"},
+            "query": {"type": "string",
+                       "description": "ONE identifier or exact phrase. "
+                                       "Multi-word queries are AND-matched "
+                                       "and rarely useful without fallback."},
             "kernel_version": {"type": "string", "description": "OLK-6.6 or OLK-5.10"},
             "limit": {"type": "integer", "default": 10},
         },

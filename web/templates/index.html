@@ -52,9 +52,20 @@
       margin-bottom: 10px; padding: 12px 14px;
     }
     .stage-head {
-      display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+      display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
       font-weight: 600; font-size: 13px;
     }
+    .stage-subtitle {
+      color: var(--muted); font-size: 12px; font-style: italic;
+      margin-bottom: 8px; padding-left: 2px;
+    }
+    .advanced-block { margin-top: 6px; }
+    .advanced-block summary {
+      color: var(--muted); font-size: 11px;
+      padding: 2px 0;
+    }
+    .advanced-block summary:hover { color: var(--fg); }
+    .advanced-block .kv { margin-top: 4px; opacity: 0.85; }
     .badge {
       display: inline-block; padding: 1px 8px; border-radius: 10px;
       font-size: 11px; background: var(--border); color: var(--muted);
@@ -157,11 +168,16 @@ const LANG = {
     status_empty: '请输入故障现象',
     status_error: '错误',
     placeholder: '粘贴 dmesg call trace，或描述故障现象。\n\n示例：\n[12345.677000] oom-kill:constraint=CONSTRAINT_MEMCG, ...\n...\n或：OLK-6.6 节点 java 进程被 OOM kill，需要分析根因',
-    stage_triage: '阶段 1 · 故障分类',
-    stage_retrieval: '阶段 2 · 七路 BM25 召回',
-    stage_react: '阶段 3 · ReAct 调研',
-    stage_bind: '阶段 4 · 证据绑定',
-    stage_report: '阶段 5 · 最终报告',
+    stage_triage: '阶段 1 · 解读故障',
+    stage_triage_sub: '识别故障类型、提取关键事件',
+    stage_retrieval: '阶段 2 · 检索历史问题',
+    stage_retrieval_sub: '在 CVE、Bugzilla、内核邮件、syzbot、commit、源码里找相似案例',
+    stage_react: '阶段 3 · 深入调研',
+    stage_react_sub: '智能体逐步推理、多次调用工具收集证据',
+    stage_bind: '阶段 4 · 核对证据',
+    stage_bind_sub: '检查每条结论是否有真实证据支撑',
+    stage_report: '阶段 5 · 出具报告',
+    stage_report_sub: '汇总根因、修复建议、证据 trace',
     badge_running: '运行中',
     badge_hits: '条命中',
     badge_extracted: '条提取',
@@ -173,13 +189,14 @@ const LANG = {
     label_raw_len: '输入长度',
     label_events: '事件数',
     label_none_extracted: '（未提取，将回退到 LLM 分类）',
-    label_taint: '污染标记',
-    label_hw_signals: '硬件信号',
-    label_io_signals: 'IO 挂起信号',
+    label_taint: '内核污染标记',
+    label_hw_signals: '硬件错误信号',
+    label_io_signals: '存储挂起信号',
     label_fault_kind: '故障类型',
     label_fault_summary: '故障摘要',
-    label_sop: 'SOP 流程',
-    label_route: '诊断路由',
+    label_sop: '排查方案',
+    label_route: '诊断方向',
+    label_advanced: '高级信息',
     label_total: '总数',
     label_by_route: '按路由',
     label_route_col: '路由',
@@ -214,11 +231,16 @@ const LANG = {
     status_empty: 'Please enter a fault symptom',
     status_error: 'Error',
     placeholder: 'Paste a dmesg call trace, or describe the fault.\n\nExample:\n[12345.677000] oom-kill:constraint=CONSTRAINT_MEMCG, ...\n...\nor: OLK-6.6 node has java process OOM-killed, root-cause analysis needed',
-    stage_triage: 'Stage 1 · Triage',
-    stage_retrieval: 'Stage 2 · 7-route BM25 Retrieval',
-    stage_react: 'Stage 3 · ReAct Investigation',
-    stage_bind: 'Stage 4 · Bind Claims',
-    stage_report: 'Stage 5 · Final Report',
+    stage_triage: 'Stage 1 · Parse fault',
+    stage_triage_sub: 'Detect fault type and key events from the log',
+    stage_retrieval: 'Stage 2 · Search prior cases',
+    stage_retrieval_sub: 'Look up similar issues in CVE / Bugzilla / mailing list / syzbot / commits / source',
+    stage_react: 'Stage 3 · Deep investigation',
+    stage_react_sub: 'Agent reasons step-by-step, calling tools to gather evidence',
+    stage_bind: 'Stage 4 · Verify evidence',
+    stage_bind_sub: 'Check each claim has supporting evidence',
+    stage_report: 'Stage 5 · Compose report',
+    stage_report_sub: 'Summarise root cause, fix recommendation, and evidence trace',
     badge_running: 'running',
     badge_hits: 'hits',
     badge_extracted: 'extracted',
@@ -230,13 +252,14 @@ const LANG = {
     label_raw_len: 'raw_input_len',
     label_events: 'events',
     label_none_extracted: '(none extracted — will rely on LLM classify)',
-    label_taint: 'taint_flags',
-    label_hw_signals: 'hardware_signals',
-    label_io_signals: 'io_hang_signals',
-    label_fault_kind: 'fault_kind',
-    label_fault_summary: 'fault_summary',
-    label_sop: 'sop_name',
-    label_route: 'diagnostic_route',
+    label_taint: 'kernel taint flags',
+    label_hw_signals: 'hardware error signals',
+    label_io_signals: 'I/O-hang signals',
+    label_fault_kind: 'fault kind',
+    label_fault_summary: 'fault summary',
+    label_sop: 'procedure',
+    label_route: 'diagnostic direction',
+    label_advanced: 'advanced details',
     label_total: 'total',
     label_by_route: 'by_route',
     label_route_col: 'route',
@@ -306,14 +329,17 @@ function renderShell() {
 
 // ── Event handlers — render one event ─────────────────────────────────────
 
-function appendStage(id, title, badge, badgeClass) {
+function appendStage(id, title, badge, badgeClass, subtitle) {
   const div = document.createElement("div");
   div.className = "stage";
   div.id = "stage-" + id;
+  const subHtml = subtitle
+    ? `<div class="stage-subtitle">${escapeHtml(subtitle)}</div>`
+    : '';
   div.innerHTML = `<div class="stage-head">
       <span class="stage-title">${escapeHtml(title)}</span>
       <span class="badge ${badgeClass||''}">${escapeHtml(badge||'')}</span>
-    </div><div class="stage-body"></div>`;
+    </div>${subHtml}<div class="stage-body"></div>`;
   out.appendChild(div);
   return div.querySelector(".stage-body");
 }
@@ -330,7 +356,8 @@ function handle(ev) {
   switch (ev.type) {
     case "triage_input": {
       const body = appendStage("triage", t('stage_triage'),
-                                t('badge_running'), "accent");
+                                t('badge_running'), "accent",
+                                t('stage_triage_sub'));
       body.innerHTML = kv([
         [t('label_input_type'), ev.input_type],
         [t('label_raw_len'), ev.raw_input_len + ' ' + t('chars')],
@@ -375,7 +402,8 @@ function handle(ev) {
     }
     case "retrieval": {
       const body = appendStage("retrieval", t('stage_retrieval'),
-                                ev.total + ' ' + t('badge_hits'), "accent");
+                                ev.total + ' ' + t('badge_hits'), "accent",
+                                t('stage_retrieval_sub'));
       let h = kv([
         [t('label_by_route'), JSON.stringify(ev.by_route)],
         [t('label_total'), ev.total],
@@ -392,13 +420,18 @@ function handle(ev) {
       break;
     }
     case "react_prep": {
-      appendStage("react", t('stage_react'), t('badge_running'), "accent")
-        .innerHTML = kv([
-          [t('label_route'), ev.route],
-          [t('label_tools_available'), ev.tools_available],
-          [t('label_sys_prompt_len'), ev.system_prompt_len],
-          [t('label_user_prompt_len'), ev.user_prompt_len],
-        ]);
+      const body = appendStage("react", t('stage_react'),
+                                t('badge_running'), "accent",
+                                t('stage_react_sub'));
+      // Main info: route + tool count are user-meaningful
+      // Advanced: prompt lengths are internal sizing info, fold by default
+      body.innerHTML = kv([
+        [t('label_route'), ev.route],
+        [t('label_tools_available'), ev.tools_available],
+      ]) + `<details class="advanced-block"><summary>${escapeHtml(t('label_advanced'))}</summary>${kv([
+        [t('label_sys_prompt_len'), ev.system_prompt_len],
+        [t('label_user_prompt_len'), ev.user_prompt_len],
+      ])}</details>`;
       break;
     }
     case "react_step_start": {
@@ -447,7 +480,8 @@ function handle(ev) {
     case "bind_claims": {
       const body = appendStage("bind", t('stage_bind'),
                                 ev.groundedness || t('none'),
-                                ev.groundedness === "grounded" ? "ok" : "warn");
+                                ev.groundedness === "grounded" ? "ok" : "warn",
+                                t('stage_bind_sub'));
       let h = kv([
         [t('label_groundedness'), ev.groundedness || t('none')],
         [t('label_verified'), ev.verified_claims_n],
@@ -466,7 +500,8 @@ function handle(ev) {
     }
     case "report": {
       const body = appendStage("report", t('stage_report'),
-                                ev.report_md_len + ' ' + t('chars'), "ok");
+                                ev.report_md_len + ' ' + t('chars'), "ok",
+                                t('stage_report_sub'));
       body.innerHTML = `<pre class="report">${escapeHtml(ev.report_md)}</pre>`;
       break;
     }

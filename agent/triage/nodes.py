@@ -38,6 +38,50 @@ _CHANGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Q1 fix (2026-06-01): auto-extract kernel version from raw input.
+# Real users paste bare dmesg without prose; the CPU / "Linux version"
+# line always carries the full kernel release string. Without this the
+# agent gets "Kernel version: unknown" in its system prompt even though
+# the dmesg literally says `6.6.0-21.0.0.21.oe2403.x86_64`.
+#
+# Pattern requires an arch suffix to avoid matching unrelated version-like
+# tokens (e.g. "ext4-1.46.5"). Matches strings like:
+#   6.6.0-21.0.0.21.oe2403.x86_64
+#   5.10.0-153.oe2203sp3.x86_64
+#   6.6.5-1-default.x86_64
+_KVER_RE = re.compile(
+    r"\b(\d+\.\d+\.\d+[-.][\w.+~+-]+?\."
+    r"(?:x86_64|aarch64|ppc64le|s390x|i686|riscv64))\b"
+)
+_OE_TAG_RE = re.compile(r"\boe\d+(?:sp\d+)?\b", re.IGNORECASE)
+
+
+def _extract_kernel_version(text: str) -> tuple[str | None, str | None]:
+    """Return (full_kernel_version, olk_version_tag) extracted from text.
+
+    The OLK tag is derived only when the kernel release contains an
+    openEuler `oe<digits>` token; otherwise returns None for OLK and the
+    caller falls back to whatever's already in state.
+
+    Examples
+    --------
+    "6.6.0-21.0.0.21.oe2403.x86_64"  → (full, "OLK-6.6")
+    "5.10.0-153.oe2203sp3.x86_64"    → (full, "OLK-5.10")
+    "6.6.5-1-default.x86_64"         → (full, None)   — upstream, no OLK
+    """
+    if not text:
+        return None, None
+    m = _KVER_RE.search(text)
+    if not m:
+        return None, None
+    full = m.group(1)
+    olk = None
+    if _OE_TAG_RE.search(full):
+        parts = full.split(".")
+        if len(parts) >= 2:
+            olk = f"OLK-{parts[0]}.{parts[1]}"
+    return full, olk
+
 
 def parse_input(state: dict) -> dict:
     """Detect whether raw_input is a dmesg blob, file path, or free-form question."""
@@ -109,6 +153,18 @@ def extract_events(state: dict) -> dict:
                 events = [e.to_dict() for e in _extract(summary.dmesg_tail)]
         except Exception as exc:
             logger.error("sosreport parse failed: %s", exc)
+
+    # Q1 fix (2026-06-01): if the caller didn't set kernel_version yet
+    # (the common path for users pasting bare dmesg), try to extract it
+    # from the raw text. Also runs on input_type='question' since users
+    # often paste a dmesg snippet inside a free-form question — the
+    # CPU / "Linux version" line is the canonical source.
+    if not kernel_version or not olk_version_tag:
+        kv, oe = _extract_kernel_version(dmesg_text or raw)
+        if kv and not kernel_version:
+            kernel_version = kv
+        if oe and not olk_version_tag:
+            olk_version_tag = oe
 
     return {
         **state,

@@ -3,7 +3,7 @@
 ## 任务
 调研以下硬件故障，判断它是**硬件缺陷**、**固件 bug**，还是**内核驱动问题**。
 
-> **写作语言约定**：本对话产出的所有叙述（## Hardware Fault Analysis / ## Root Cause / ## Recommended Actions / ## Confidence 下面的正文）使用**简体中文**。但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码、以及 MCE / EDAC / IOMMU / UE / CE 等无固定中译的硬件术语**保留英文原文**。Markdown 标题本身保持英文，只翻译正文。
+> **写作语言约定**：本对话产出的所有叙述与 **Markdown 标题**（## 硬件故障分析 / ## 根本原因 / ## 推荐处理 / ## 置信度）一律使用**简体中文**。但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码、以及 MCE / EDAC / IOMMU / UE / CE 等无固定中译的硬件术语**保留英文原文**。
 
 ## 上下文
 - 内核版本：{kernel_version}
@@ -26,16 +26,16 @@
 
 ## 输出格式
 <final_answer>
-## Hardware Fault Analysis
+## 硬件故障分析
 [错误类型、受影响组件、严重程度评估]
 
-## Root Cause
+## 根本原因
 [硬件缺陷 / 固件 bug / 内核驱动 bug —— 给出具体证据]
 
-## Recommended Actions
+## 推荐处理
 [按优先级排序：硬件更换 / 固件升级 / 内核驱动 patch / 监控]
 
-## Confidence
+## 置信度
 [high / medium / low]
 </final_answer>
 

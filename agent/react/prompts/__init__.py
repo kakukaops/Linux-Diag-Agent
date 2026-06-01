@@ -34,13 +34,12 @@ _ROUTE_FILES_ZH: dict[str, str] = {
 # for the route. Keeps code identifiers verbatim per Chinese-translation
 # rules.
 _ZH_FALLBACK_DIRECTIVE = (
-    "\n\n## 输出语言（Output Language）\n"
-    "本次诊断的所有人类可读叙述（## Root Cause / ## Fix Recommendation /\n"
-    "## Confidence / ## Evidence trace 中的说明）使用**简体中文**。但函数名、\n"
-    "commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码（ENOMEM /\n"
-    "EINVAL …）、以及 memcg / OOM / KASAN / use-after-free 等无固定中译的\n"
-    "技术术语**保留英文原文**。Markdown 标题本身也保持英文，只翻译标题下\n"
-    "的正文。\n"
+    "\n\n## 输出语言\n"
+    "本次诊断的所有人类可读叙述与 **Markdown 标题**（## 根本原因 /\n"
+    "## 修复建议 / ## 置信度 / ## 证据来源 等）一律使用**简体中文**。\n"
+    "但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、\n"
+    "错误码（ENOMEM / EINVAL …）、以及 memcg / OOM / KASAN /\n"
+    "use-after-free 等无固定中译的技术术语**保留英文原文**。\n"
 )
 
 
@@ -172,22 +171,21 @@ _TERMINATION_FOOTER_ZH = """
 
 ## 假设枚举 + 自我批驳（产出最终答案前**强制**执行）
 
-写 `<final_answer>` 之前，你的 `## Root Cause` **必须**按顺序包含三个子节：
-`### Candidate hypotheses` → `### Critique` → `### Selected`。**跳过 Critique
-是硬性违规。**
+写 `<final_answer>` 之前，你的 `## 根本原因` **必须**按顺序包含三个中文子节：
+`### 候选假设` → `### 自我批驳` → `### 选定方案`。**跳过自我批驳是硬性违规。**
 
-### 第 1 步 — `### Candidate hypotheses`
+### 第 1 步 — `### 候选假设`
 **2-4 条**候选编号列出。每条带：
 - 0-1 之间的置信度，按下面的校准规则诚实给
 - 一行 justification，引用具体证据
 
-### 第 2 步 — `### Critique`（这是新增的强制部分）
+### 第 2 步 — `### 自我批驳`（这是新增的强制部分）
 **站在 reviewer 的角度反驳你最看好的候选。** 对接下来 1-2 个候选，各写一段：
 "为什么 #N 反而可能比 #1 更对？"——引用证据里真实存在的歧义。如果你无法
 为 #1 给出合理的反对意见，说明 #1 很可能只是在拟合表层证据。
 
-### 第 3 步 — `### Selected: #N`
-Critique 之后才提交一个假设，或上升为不足。
+### 第 3 步 — `### 选定方案: #N`
+自我批驳之后才提交一个假设，或上升为不足。
 
 ### 置信度校准规则（强制执行）
 - **如果最高置信度 < 0.6 → 必须用 `<insufficient_evidence>` 而非 `<final_answer>`**。
@@ -209,9 +207,9 @@ Critique 之后才提交一个假设，或上升为不足。
 ### 示例
 
 ```
-## Root Cause
+## 根本原因
 
-### Candidate hypotheses
+### 候选假设
 1. (confidence 0.7) memcg accounting race during reclaim — 由 commit
    f9c645621a28（"memcg, oom: don't require __GFP_FS"）以及 call trace
    中匹配帧 `mem_cgroup_out_of_memory` 支持。
@@ -220,19 +218,19 @@ Critique 之后才提交一个假设，或上升为不足。
 3. (confidence 0.2) 与 cgroup 无关的全局内存压力 — order=0 alloc，
    但 failcnt=47 让这条不太可能。
 
-### Critique
+### 自我批驳
 为什么 #2 反而可能更对？用户报告显示了 memory.high 压力，而
 892962a26026 正是针对垂死任务在 memory.high 上的 throttle 问题——
 如果业务存在大量短命进程，能直接解释症状。#2 的主要弱点是
 日志里没有显式的 "throttled" 行。
 
-### Selected: #1 (confidence 0.7)
+### 选定方案: #1 (confidence 0.7)
 [详细说明……]
 ```
 
-## 证据 trace 要求（v2.1 P2 + v2.2 Path C 强化）
+## 证据来源要求（v2.1 P2 + v2.2 Path C 强化）
 
-`<final_answer>` 里 `### Selected` 之后**必须**包含一节 `### Evidence trace`。
+`<final_answer>` 里 `### 选定方案` 之后**必须**包含一节 `### 证据来源`。
 **这一节里每一个 ID 都必须来自你本会话实际调用过的工具的输出。** 不许编造
 commit hash，不许凭训练记忆引用 ID。
 
@@ -246,7 +244,7 @@ commit hash，不许凭训练记忆引用 ID。
 合法 trace 示例：
 
 ```
-### Evidence trace
+### 证据来源
 - search_commits 在第 3 次调用返回了 commit `892962a26026`
   （subject: "memcontrol: don't throttle dying tasks on memory.high"）
 - get_commit_detail(892962a26026) 确认 `Fixes:` trailer 指向 <upstream-sha>
@@ -256,7 +254,7 @@ commit hash，不许凭训练记忆引用 ID。
 或者，对于无 commit-fix 的配置 / 硬件类故障：
 
 ```
-### Evidence trace (no-commit case)
+### 证据来源（无 commit 情形）
 - search_bugs 返回 gitee#I3J87Y，报告完全相同的 kernfs 症状
 - bug body 确认这是 userspace systemd / initramfs 配置问题（非内核 bug）
 - 不引用 commit；根因是配置，不是代码。

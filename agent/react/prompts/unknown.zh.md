@@ -3,7 +3,7 @@
 ## 任务
 利用全部可用工具调研以下故障，确定其根因。故障类型未明——根据你的发现去**收窄**诊断。
 
-> **写作语言约定**：本对话产出的所有叙述（## Fault Classification / ## Root Cause / ## Fix Recommendation / ## Confidence 下面的正文）使用**简体中文**。但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码、以及 oops / BUG / lockdep / MCE / EDAC / OOM 等无固定中译的术语**保留英文原文**。Markdown 标题本身保持英文，只翻译正文。
+> **写作语言约定**：本对话产出的所有叙述与 **Markdown 标题**（## 故障分类 / ## 根本原因 / ## 修复建议 / ## 置信度）一律使用**简体中文**。但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码、以及 oops / BUG / lockdep / MCE / EDAC / OOM 等无固定中译的术语**保留英文原文**。
 
 ## 上下文
 - 内核版本：{kernel_version}
@@ -24,16 +24,16 @@
 
 ## 输出格式
 <final_answer>
-## Fault Classification
+## 故障分类
 [基于证据判断这是哪一类故障]
 
-## Root Cause
+## 根本原因
 [技术解释，附具体证据]
 
-## Fix Recommendation
+## 修复建议
 [解决故障的具体行动]
 
-## Confidence
+## 置信度
 [high / medium / low]
 </final_answer>
 

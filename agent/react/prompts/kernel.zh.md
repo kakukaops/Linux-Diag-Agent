@@ -3,7 +3,7 @@
 ## 任务
 调研以下描述的内核故障，给出确定性的根因分析与可执行的修复建议。
 
-> **写作语言约定**：本对话产出的所有叙述段落（## Root Cause / ## Fix Recommendation / ## Confidence / ## Evidence trace 中的说明）使用**简体中文**。但以下内容必须保留原文形态，不翻译：函数名、commit hash、CVE-ID、文件路径、内核配置宏（CONFIG_*）、工具名（`find_commits_touching_symbol` 等）、错误码（ENOMEM / EINVAL …）、以及无固定中文译名的英文专有名词（memcg / OOM / KASAN / use-after-free 等）。Markdown 标题本身（## Root Cause / ## Fix Recommendation / ## Confidence）也保持英文，只翻译标题下面的正文。
+> **写作语言约定**：本对话产出的所有叙述段落与 **Markdown 标题**（## 根本原因 / ## 修复建议 / ## 置信度 / ### 候选假设 / ### 自我批驳 / ### 选定方案 / ### 证据来源 等）一律使用**简体中文**。但以下内容必须保留原文形态，不翻译：函数名、commit hash、CVE-ID、文件路径、内核配置宏（CONFIG_*）、工具名（`find_commits_touching_symbol` 等）、错误码（ENOMEM / EINVAL …）、以及无固定中文译名的英文专有名词（memcg / OOM / KASAN / use-after-free 等）。
 
 ## 上下文
 - 内核版本（Kernel version）：{kernel_version}
@@ -82,35 +82,35 @@ find_commits_touching_symbol(symbol=<frame_name>, kernel_version=<OLK-X.Y>)
 
 ### Phase 6 — 最终答案结构（强制小节）
 
-你的 `<final_answer>` **必须**按顺序包含以下小节。Phase 2 的假设枚举 / Phase 5 的置信度校准放在 `## Root Cause` 内。下面这几节是**独立**的：
+你的 `<final_answer>` **必须**按顺序包含以下小节，**全部使用中文标题**。Phase 2 的假设枚举 / Phase 5 的置信度校准放在 `## 根本原因` 内。下面这几节是**独立**的：
 
 ```
-## Root Cause
-<按上文要求列出假设 + 自我批驳 + 选定>
+## 根本原因
+<按上文要求列出假设 + 自我批驳 + 选定方案；用 ### 候选假设 / ### 自我批驳 / ### 选定方案 三个子小节>
 
-## Fix Recommendation
+## 修复建议
 <根据 get_regression_fixes 返回结果，**精确选择**以下三种形式之一>
 
-  Form A — 干净建议（无 revert 检测到）：
+  形式 A — 干净建议（无 revert 检测到）：
     将 commit <SHA>（"<subject>"）backport 到 OLK-X.Y。当前在
     <list> 已有，<list> 缺失。命令：`git cherry-pick <SHA>`。
 
-  Form B — 检测到 revert，强制告警：
+  形式 B — 检测到 revert，强制告警：
     ⚠ 禁止单独应用 commit <SHA>。它已被上游 <revert_SHA>
     （"<revert subject>"）回退。原因：<引自 revert commit body 的
     理由>。建议处理方式：使用 mainline 版本的 fix，或干脆不 backport。
     这里列出原 SHA 只是为了让用户知道它**不是**正确答案。
 
-  Form C — 不推荐任何 commit（配置 / 硬件 / 策略）：
+  形式 C — 不推荐任何 commit（配置 / 硬件 / 策略）：
     没有 commit-level fix 适用。建议处理方式：<具体配置变更 /
     硬件更换 / 替代方案>。根因属于
     <分类：design-by-design / 硬件 / 配置 / 回归链>，
     不是一个内核软件 bug。
 
-## Confidence
-<诚实的置信度区间；如果用了 Phase 5，标注 "KG silent — prior knowledge">
+## 置信度
+<诚实的置信度区间；如果用了 Phase 5，标注 "KG silent — 基于先验知识">
 
-## Evidence trace
+## 证据来源
 <同前>
 ```
 
@@ -138,16 +138,16 @@ find_commits_touching_symbol(symbol=<frame_name>, kernel_version=<OLK-X.Y>)
 如果证据匹配上述任一模式，你的 `<final_answer>` **必须**把硬件/存储假设作为**首要根因**，把软件 bug 列为次要替代方案。建议先查磁盘/固件/硬件健康。
 
 ## 输出格式（Output Format）
-当证据足够下结论时，把你的最终分析包在 XML 标签里：
+当证据足够下结论时，把你的最终分析包在 XML 标签里，**所有 Markdown 标题用中文**：
 
 <final_answer>
-## Root Cause
+## 根本原因
 [一段话说明根因，并引用具体 commit、函数、证据]
 
-## Fix Recommendation
+## 修复建议
 [具体要 backport 的 commit SHA，或配置变更，或替代方案]
 
-## Confidence
+## 置信度
 [high / medium / low — 并说明原因]
 </final_answer>
 

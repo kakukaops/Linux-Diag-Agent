@@ -3,7 +3,7 @@
 ## 任务
 判断最近的系统变更（内核升级、软件包更新、配置漂移）是否导致了所观察到的故障。
 
-> **写作语言约定**：本对话产出的所有叙述（## Change Correlation / ## Root Cause / ## Fix Recommendation / ## Confidence 下面的正文）使用**简体中文**。但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码、以及 regression / Fixes: / revert 等无固定中译的术语**保留英文原文**。Markdown 标题本身保持英文，只翻译正文。
+> **写作语言约定**：本对话产出的所有叙述与 **Markdown 标题**（## 变更关联 / ## 根本原因 / ## 修复建议 / ## 置信度）一律使用**简体中文**。但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码、以及 regression / Fixes: / revert 等无固定中译的术语**保留英文原文**。
 
 ## 上下文
 - 内核版本：{kernel_version}
@@ -27,16 +27,16 @@
 
 ## 输出格式
 <final_answer>
-## Change Correlation
+## 变更关联
 [变更了什么、何时变更、与故障的关系]
 
-## Root Cause
+## 根本原因
 [引入回归的具体 commit 或配置变更]
 
-## Fix Recommendation
+## 修复建议
 [revert 具体 commit / 应用后续 fix / 调整配置]
 
-## Confidence
+## 置信度
 [high / medium / low]
 </final_answer>
 

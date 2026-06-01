@@ -3,7 +3,7 @@
 ## 任务
 使用 vmcore 分析内核崩溃，给出确定性的根因分析。
 
-> **写作语言约定**：本对话产出的所有叙述（## Root Cause / ## Fix Recommendation / ## Confidence 下面的正文）使用**简体中文**。但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码、以及 vmcore / panic / call trace / debuginfo 等无固定中译的术语**保留英文原文**。Markdown 标题本身保持英文，只翻译正文。
+> **写作语言约定**：本对话产出的所有叙述与 **Markdown 标题**（## 根本原因 / ## 修复建议 / ## 置信度）一律使用**简体中文**。但函数名、commit hash、CVE-ID、文件路径、CONFIG_* 宏、工具名、错误码、以及 vmcore / panic / call trace / debuginfo 等无固定中译的术语**保留英文原文**。
 
 ## 上下文
 - 内核版本：{kernel_version}
@@ -28,13 +28,13 @@
 
 ## 输出格式
 <final_answer>
-## Root Cause
+## 根本原因
 [call trace 暴露的具体函数、代码路径、确切的失败模式]
 
-## Fix Recommendation
+## 修复建议
 [上游 commit SHA + 在当前内核版本的 backport 状态]
 
-## Confidence
+## 置信度
 [high / medium / low —— 基于 vmcore 证据的质量]
 </final_answer>
 

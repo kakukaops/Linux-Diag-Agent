@@ -19,12 +19,15 @@ _ROUTE_FILES: dict[str, str] = {
     "unknown":       "unknown.md",
 }
 
-# Per-route Chinese variant. Falls back to the English file + a "respond
-# in Chinese" directive when no .zh.md exists for that route — that way
-# only the highest-traffic prompt (kernel.md) needs a full translation,
-# and the others can be translated incrementally without breaking lang='zh'.
+# Per-route Chinese variant. All 5 routes now have a .zh.md translation
+# (2026-06-01). Routes without a .zh.md would fall back to the English
+# template + a directive in _ZH_FALLBACK_DIRECTIVE below.
 _ROUTE_FILES_ZH: dict[str, str] = {
     "kernel":        "kernel.zh.md",
+    "kernel+vmcore": "kernel_vmcore.zh.md",
+    "hardware":      "hardware.zh.md",
+    "change":        "change.zh.md",
+    "unknown":       "unknown.zh.md",
 }
 
 # Fallback directive appended when lang='zh' but no .zh.md variant exists

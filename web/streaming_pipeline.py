@@ -190,10 +190,10 @@ def _run_react_streamed(state: dict, lang: str = "zh") -> Iterator[dict]:
     state["final_analysis"] = result.final_answer
 
     # ── Stage 4: bind_claims ────────────────────────────────────────────
-    yield from _run_bind_and_report(state)
+    yield from _run_bind_and_report(state, lang=lang)
 
 
-def _run_bind_and_report(state: dict) -> Iterator[dict]:
+def _run_bind_and_report(state: dict, lang: str = "zh") -> Iterator[dict]:
     from agent.diagnosis.nodes import bind_claims
     from agent.report.renderer import render_md
 
@@ -208,7 +208,7 @@ def _run_bind_and_report(state: dict) -> Iterator[dict]:
                for c in (state.get("claims") or [])[:8]
            ]}
 
-    md = render_md(state)
+    md = render_md(state, lang=lang)
     yield {"type": "report",
            "report_md_len": len(md),
            "report_md": md}

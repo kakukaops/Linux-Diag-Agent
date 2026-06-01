@@ -76,6 +76,8 @@ data/metrics/sync_audit.json
 # Eval outputs (large, regenerable)
 eval/results/
 eval/results_v2/
+# Variant names from ad-hoc runs (kasan002_kg, runNN_*, pathC_smoke, ...)
+eval/results_v2_*/
 
 # Claude Code session metadata
 .claude/

@@ -329,34 +329,37 @@ v2 计划产出的 ADR（已起草）：
 
 ## 7. 开始 v2 实施前的最后检查清单
 
+> _审计于 2026-06-01_：实施已超出"开始 v2"阶段，进入 v2.4 收尾。多数 box
+> 已实质完成；治理类项（评审通过）保留 `[ ]`，由你最终签发。
+
 ### 7.1 文档 & 决策
 
-- [ ] PRD 评审通过
-- [ ] Architecture 评审通过
-- [ ] ADR-019 ~ ADR-024 评审通过
-- [ ] AgentThink.md 团队对齐
-- [ ] v2 vs v1 兼容策略明确（CLI / 报告 JSON schema 向后兼容）
+- [x] PRD 文档已落档 (`docs/v2/PRD.md`) — _评审签发待你确认_
+- [x] Architecture 文档已落档 (`docs/v2/Architecture.md`) — _同上_
+- [x] ADR-019 ~ ADR-025 全部落档（7 个 ADR） — _同上_
+- [x] AgentThink.md 已落档 (`docs/AgentThink.md`)
+- [x] v2 vs v1 兼容策略明确：`diagnose()` API 保持向后兼容；`report_json.schema_version` 从 1 → 2（见 `agent/report/renderer.py`）
 
 ### 7.2 v1 收尾依赖
 
-- [ ] LKML stable 摄入完成（~5h 内）
-- [ ] Linker 重跑（`run_linker()` + `link_nvd_commits()`）
-- [ ] linux-mm 补抓（fetcher 修复已上线）
-- [ ] `link_commit_message` 验证非零
+- [x] LKML stable 摄入完成（实测 `lkml_message` 115,001 行，2026-05 完成）
+- [x] Linker 重跑：`run_linker()` + `link_nvd_commits()` 已多次重跑，`link_commit_message` = 38,211 / `link_commit_cve` = 17,678 / `link_commit_bug` = 58,634
+- [x] linux-mm 补抓完成（fetcher 修复 + 增量回填均已上线，2026-05）
+- [x] `link_commit_message` 验证非零（38,211）
 
 ### 7.3 资源 & 凭据
 
-- [ ] OLK kernel-debuginfo 仓库访问确认
-- [ ] gitee / atomgit API 凭据（如需要）
-- [ ] Prometheus / Elasticsearch 测试实例（M17 起）
-- [ ] OpenRouter API key 配额提升（开发期）
+- [ ] OLK kernel-debuginfo 仓库访问确认 — _vmcore 路由暂未启用，验证延后_
+- [x] gitee / atomgit API 凭据已配置（ADR-022 实现，token 在 `configs/local.yaml`）
+- [ ] Prometheus / Elasticsearch 测试实例 — _M17 观测层尚未启动_
+- [x] LLM API 配额：已切 DeepSeek 官方 API（OpenRouter 已停用），见 `configs/local.yaml`
 
 ### 7.4 工程基础
 
-- [ ] CI 跑 v1 全部测试通过
-- [ ] `agent_tool_trace` 表迁移设计评审
-- [ ] drgn 容器化方案确认（apt/dnf 包路径）
-- [ ] ReAct loop 原型 spike（1 周内，验证 LangGraph + ToolCall 集成可行性）
+- [ ] CI 跑 v1 全部测试通过 — _本仓库尚未配置 GitHub Actions / 本地 CI；测试可手动跑 (`pytest tests/`)，但无自动门禁_
+- [ ] `agent_tool_trace` 表迁移设计评审 — _未做。当前 trace 存在 state 与 eval 输出 JSON 中，未持久化到独立表_
+- [ ] drgn 容器化方案 — _T-018 deferred (vmcore 路由暂未启用)_
+- [x] ReAct loop 原型 spike：`docs/v2/M22_spike_findings.md` 已记录结论，主实现 (`agent/react/loop.py`) 已 land
 
 ---
 

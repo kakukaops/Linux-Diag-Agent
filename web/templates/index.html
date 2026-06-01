@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Linux Diag Agent</title>
+  <style>
+    :root {
+      --bg: #0f1419; --panel: #1a1f29; --border: #2a3140;
+      --fg: #d3d7e0; --muted: #7a849a;
+      --accent: #5294e2; --ok: #4caf50; --warn: #ffa726; --err: #e57373;
+      --mono: ui-monospace, "Cascadia Mono", "Fira Code", "Source Code Pro", monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px;
+      background: var(--bg); color: var(--fg);
+      font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+      font-size: 14px; line-height: 1.5;
+    }
+    .header { display: flex; align-items: baseline; gap: 12px; }
+    h1 { margin: 0 0 8px 0; font-weight: 600; font-size: 18px; }
+    .sub { color: var(--muted); margin-bottom: 16px; font-size: 12px; }
+    .grow { flex: 1; }
+    .input-bar { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }
+    textarea {
+      width: 100%; min-height: 140px;
+      background: #0a0e14; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 4px; padding: 10px;
+      font-family: var(--mono); font-size: 12px;
+      resize: vertical;
+    }
+    .controls { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+    button {
+      background: var(--accent); color: white; border: 0;
+      padding: 8px 18px; border-radius: 4px; cursor: pointer; font-size: 14px;
+      font-weight: 500;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .secondary { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+    .lang-toggle {
+      background: transparent; border: 1px solid var(--border);
+      color: var(--muted); padding: 4px 10px; border-radius: 4px;
+      font-size: 12px; cursor: pointer;
+    }
+    .lang-toggle:hover { color: var(--fg); }
+    .status { color: var(--muted); font-size: 12px; }
+    .output { margin-top: 16px; }
+    .stage {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+      margin-bottom: 10px; padding: 12px 14px;
+    }
+    .stage-head {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+      font-weight: 600; font-size: 13px;
+    }
+    .badge {
+      display: inline-block; padding: 1px 8px; border-radius: 10px;
+      font-size: 11px; background: var(--border); color: var(--muted);
+    }
+    .badge.ok { background: rgba(76,175,80,.15); color: var(--ok); }
+    .badge.warn { background: rgba(255,167,38,.15); color: var(--warn); }
+    .badge.err { background: rgba(229,115,115,.15); color: var(--err); }
+    .badge.accent { background: rgba(82,148,226,.15); color: var(--accent); }
+    .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px;
+          font-family: var(--mono); font-size: 12px; }
+    .kv > .k { color: var(--muted); }
+    .kv > .v { color: var(--fg); word-break: break-word; }
+    .tool-call {
+      background: rgba(82,148,226,.05); border-left: 2px solid var(--accent);
+      padding: 6px 10px; margin: 4px 0;
+      font-family: var(--mono); font-size: 11px;
+    }
+    .tool-call .name { color: var(--accent); font-weight: 600; }
+    .tool-call .args { color: var(--muted); }
+    .tool-call .res { color: var(--fg); margin-top: 2px;
+                       max-height: 60px; overflow: hidden;
+                       white-space: pre-wrap; }
+    .tool-call.err { border-left-color: var(--err); }
+    .ev-list { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    .ev-list li { padding: 2px 0; }
+    pre.report {
+      background: #0a0e14; padding: 14px; border-radius: 4px;
+      max-height: 70vh; overflow: auto;
+      font-family: var(--mono); font-size: 12px;
+      white-space: pre-wrap; word-break: break-word;
+      border: 1px solid var(--border);
+    }
+    .hr { height: 1px; background: var(--border); margin: 6px 0; }
+    details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+    details summary:hover { color: var(--fg); }
+    .spinner {
+      display: inline-block; width: 10px; height: 10px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1 id="h1"></h1>
+    <div class="grow"></div>
+    <button class="lang-toggle" id="btn-lang"></button>
+  </div>
+  <div class="sub" id="subtitle"></div>
+
+  <div class="input-bar">
+    <textarea id="raw-input"></textarea>
+    <div class="controls">
+      <button id="btn-diagnose"></button>
+      <button id="btn-clear" class="secondary"></button>
+      <button id="btn-sample" class="secondary"></button>
+      <div class="grow"></div>
+      <span class="status" id="status"></span>
+    </div>
+  </div>
+
+  <div class="output" id="output"></div>
+
+<script>
+// ── i18n ───────────────────────────────────────────────────────────────────
+
+const SAMPLE = `[12345.677000] oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,oom_memcg=/app/java,task_memcg=/app/java,task=java,pid=8821,uid=1000
+[12345.677500] Out of memory: Killed process 8821 (java) total-vm:8192000kB anon-rss:4019200kB file-rss:13312kB UID:1000 pgtables:8392kB oom_score_adj:0
+[12345.678123] CPU: 4 PID: 8821 Comm: java Tainted: G        W   OE     6.6.0-21.0.0.21.oe2403.x86_64 #1
+[12345.680111] Call Trace:
+[12345.680112]  <TASK>
+[12345.681001]  dump_stack_lvl+0x4d/0x6c
+[12345.682002]  dump_header+0x4f/0x250
+[12345.683003]  oom_kill_process+0x10c/0x110
+[12345.684004]  out_of_memory+0x265/0x4a0
+[12345.685005]  mem_cgroup_out_of_memory+0xed/0x100
+[12345.686006]  try_charge_memcg+0x71f/0x880
+[12345.687007]  mem_cgroup_charge+0x83/0xe0
+[12345.688008]  __filemap_get_folio+0x294/0x3f0
+[12345.689009]  filemap_fault+0x16a/0x9c0
+[12345.690010]  __do_fault+0x36/0x150
+[12345.691011]  do_pte_missing+0x167/0x350
+[12345.692012]  handle_mm_fault+0xdc0/0x10d0
+
+OLK-6.6 生产环境 memcg OOM kill。请走完整诊断流程：调研知识图谱、找候选 commit、验证 backport 状态。`;
+
+const LANG = {
+  zh: {
+    html_lang: 'zh',
+    title: 'Linux 故障诊断 Agent',
+    subtitle: '粘贴 dmesg 或描述故障现象，按"诊断"启动 ReAct 调研流程。',
+    btn_diagnose: '诊断',
+    btn_clear: '清空输出',
+    btn_sample: '填入示例',
+    btn_lang_label: 'EN',
+    status_ready: '就绪',
+    status_running: '诊断中…',
+    status_done: '完成',
+    status_empty: '请输入故障现象',
+    status_error: '错误',
+    placeholder: '粘贴 dmesg call trace，或描述故障现象。\n\n示例：\n[12345.677000] oom-kill:constraint=CONSTRAINT_MEMCG, ...\n...\n或：OLK-6.6 节点 java 进程被 OOM kill，需要分析根因',
+    stage_triage: 'Stage 1 · 故障分类',
+    stage_retrieval: 'Stage 2 · 7 路 BM25 召回',
+    stage_react: 'Stage 3 · ReAct 调研',
+    stage_bind: 'Stage 4 · 证据绑定',
+    stage_report: 'Stage 5 · 最终报告',
+    badge_running: '运行中',
+    badge_hits: '条命中',
+    badge_extracted: '条提取',
+    step: '步骤',
+    chars: '字符',
+    iter: '迭代',
+    tokens: '令牌',
+    label_input_type: '输入类型',
+    label_raw_len: '输入长度',
+    label_events: '事件数',
+    label_none_extracted: '（未提取，将回退到 LLM 分类）',
+    label_taint: '污染标记',
+    label_hw_signals: '硬件信号',
+    label_io_signals: 'IO 挂起信号',
+    label_fault_kind: '故障类型',
+    label_fault_summary: '故障摘要',
+    label_sop: 'SOP 流程',
+    label_route: '诊断路由',
+    label_total: '总数',
+    label_by_route: '按路由',
+    label_route_col: '路由',
+    label_tools_available: '可用工具数',
+    label_sys_prompt_len: 'system prompt 长度',
+    label_user_prompt_len: 'user prompt 长度',
+    label_force_finalize: '强制收尾',
+    label_groundedness: '证据扎根度',
+    label_verified: '已验证声明',
+    label_speculative: '推测声明',
+    label_claims: '声明',
+    final_answer_label: '最终答案',
+    err_stage: '阶段',
+    err_traceback: '错误堆栈',
+    none: '无',
+    diagnosed: '已得出诊断',
+    insufficient_evidence: '证据不足',
+    max_iter_reached: '达到迭代上限',
+    budget_exhausted: '预算耗尽',
+  },
+  en: {
+    html_lang: 'en',
+    title: 'Linux Diag Agent',
+    subtitle: 'Paste dmesg or describe the fault, then click "Diagnose" to start the ReAct investigation.',
+    btn_diagnose: 'Diagnose',
+    btn_clear: 'Clear',
+    btn_sample: 'Sample',
+    btn_lang_label: '中文',
+    status_ready: 'Ready',
+    status_running: 'Diagnosing…',
+    status_done: 'Done',
+    status_empty: 'Please enter a fault symptom',
+    status_error: 'Error',
+    placeholder: 'Paste a dmesg call trace, or describe the fault.\n\nExample:\n[12345.677000] oom-kill:constraint=CONSTRAINT_MEMCG, ...\n...\nor: OLK-6.6 node has java process OOM-killed, root-cause analysis needed',
+    stage_triage: 'Stage 1 · Triage',
+    stage_retrieval: 'Stage 2 · 7-route BM25 Retrieval',
+    stage_react: 'Stage 3 · ReAct Investigation',
+    stage_bind: 'Stage 4 · Bind Claims',
+    stage_report: 'Stage 5 · Final Report',
+    badge_running: 'running',
+    badge_hits: 'hits',
+    badge_extracted: 'extracted',
+    step: 'step',
+    chars: 'chars',
+    iter: 'iter',
+    tokens: 'tokens',
+    label_input_type: 'input_type',
+    label_raw_len: 'raw_input_len',
+    label_events: 'events',
+    label_none_extracted: '(none extracted — will rely on LLM classify)',
+    label_taint: 'taint_flags',
+    label_hw_signals: 'hardware_signals',
+    label_io_signals: 'io_hang_signals',
+    label_fault_kind: 'fault_kind',
+    label_fault_summary: 'fault_summary',
+    label_sop: 'sop_name',
+    label_route: 'diagnostic_route',
+    label_total: 'total',
+    label_by_route: 'by_route',
+    label_route_col: 'route',
+    label_tools_available: 'tools_available',
+    label_sys_prompt_len: 'system_prompt_len',
+    label_user_prompt_len: 'user_prompt_len',
+    label_force_finalize: 'force_finalize',
+    label_groundedness: 'groundedness',
+    label_verified: 'verified_claims',
+    label_speculative: 'speculative_claims',
+    label_claims: 'claims',
+    final_answer_label: 'final answer',
+    err_stage: 'stage',
+    err_traceback: 'traceback',
+    none: 'none',
+    diagnosed: 'diagnosed',
+    insufficient_evidence: 'insufficient evidence',
+    max_iter_reached: 'max iterations reached',
+    budget_exhausted: 'budget exhausted',
+  }
+};
+
+let currentLang = localStorage.getItem('lang') || 'zh';
+const events = [];  // full event log so we can re-render after language switch
+function t(key) {
+  const dict = LANG[currentLang] || LANG.zh;
+  return dict[key] !== undefined ? dict[key] : key;
+}
+function tVerdict(v) {
+  return t(v) !== v ? t(v) : v;  // fall back to raw if no translation
+}
+
+const $ = (id) => document.getElementById(id);
+const out = $("output");
+const status = $("status");
+const btn = $("btn-diagnose");
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// ── Render static UI shell from current language ──────────────────────────
+
+function renderShell() {
+  document.documentElement.lang = t('html_lang');
+  $('h1').textContent = t('title');
+  $('subtitle').textContent = t('subtitle');
+  $('btn-diagnose').textContent = t('btn_diagnose');
+  $('btn-clear').textContent = t('btn_clear');
+  $('btn-sample').textContent = t('btn_sample');
+  $('btn-lang').textContent = t('btn_lang_label');
+  $('raw-input').placeholder = t('placeholder');
+  if (status.dataset.state === 'running') {
+    status.innerHTML = '<span class="spinner"></span> ' + t('status_running');
+  } else if (status.dataset.state === 'done') {
+    status.textContent = t('status_done');
+  } else if (status.dataset.state === 'error') {
+    status.textContent = t('status_error') + ': ' + (status.dataset.errmsg || '');
+  } else if (status.dataset.state === 'empty') {
+    status.textContent = t('status_empty');
+  } else {
+    status.textContent = t('status_ready');
+  }
+}
+
+// ── Event handlers — render one event ─────────────────────────────────────
+
+function appendStage(id, title, badge, badgeClass) {
+  const div = document.createElement("div");
+  div.className = "stage";
+  div.id = "stage-" + id;
+  div.innerHTML = `<div class="stage-head">
+      <span class="stage-title">${escapeHtml(title)}</span>
+      <span class="badge ${badgeClass||''}">${escapeHtml(badge||'')}</span>
+    </div><div class="stage-body"></div>`;
+  out.appendChild(div);
+  return div.querySelector(".stage-body");
+}
+
+function kv(rows) {
+  let h = '<div class="kv">';
+  for (const [k, v] of rows) {
+    h += `<div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div>`;
+  }
+  return h + '</div>';
+}
+
+function handle(ev) {
+  switch (ev.type) {
+    case "triage_input": {
+      const body = appendStage("triage", t('stage_triage'),
+                                t('badge_running'), "accent");
+      body.innerHTML = kv([
+        [t('label_input_type'), ev.input_type],
+        [t('label_raw_len'), ev.raw_input_len + ' ' + t('chars')],
+      ]);
+      break;
+    }
+    case "triage_events": {
+      const body = $("stage-triage").querySelector(".stage-body");
+      let h = body.innerHTML;
+      const summary = ev.count > 0
+        ? `${ev.count} ${t('badge_extracted')}`
+        : `0 ${t('badge_extracted')} ${t('label_none_extracted')}`;
+      h += `<div class="hr"></div><div class="kv"><div class="k">${escapeHtml(t('label_events'))}</div><div class="v">${escapeHtml(summary)}</div></div>`;
+      if (ev.events.length) {
+        h += '<ul class="ev-list">';
+        for (const e of ev.events) h += `<li>[${escapeHtml(e.kind)}] ${escapeHtml(e.summary)}</li>`;
+        h += '</ul>';
+      }
+      body.innerHTML = h;
+      break;
+    }
+    case "triage_signals": {
+      const body = $("stage-triage").querySelector(".stage-body");
+      body.innerHTML += '<div class="hr"></div>' + kv([
+        [t('label_taint'), JSON.stringify(ev.taint_flags)],
+        [t('label_hw_signals'), JSON.stringify(ev.hardware_signals)],
+        [t('label_io_signals'), JSON.stringify(ev.io_hang_signals)],
+      ]);
+      break;
+    }
+    case "triage_route": {
+      const body = $("stage-triage").querySelector(".stage-body");
+      body.innerHTML += '<div class="hr"></div>' + kv([
+        [t('label_fault_kind'), ev.fault_kind],
+        [t('label_fault_summary'), ev.fault_summary],
+        [t('label_sop'), ev.sop_name],
+        [t('label_route'), ev.diagnostic_route],
+      ]);
+      $("stage-triage").querySelector(".badge").textContent = ev.diagnostic_route || "?";
+      $("stage-triage").querySelector(".badge").className = "badge ok";
+      break;
+    }
+    case "retrieval": {
+      const body = appendStage("retrieval", t('stage_retrieval'),
+                                ev.total + ' ' + t('badge_hits'), "accent");
+      let h = kv([
+        [t('label_by_route'), JSON.stringify(ev.by_route)],
+        [t('label_total'), ev.total],
+      ]);
+      h += '<div class="hr"></div><ul class="ev-list">';
+      for (const e of ev.top) {
+        const hash = e.commit_hash ? ` [${escapeHtml(e.commit_hash)}]` : "";
+        h += `<li>[${escapeHtml(e.route)}] ${e.score.toFixed(2)}${hash}  ${escapeHtml(e.title)}</li>`;
+      }
+      h += '</ul>';
+      body.innerHTML = h;
+      $("stage-retrieval").querySelector(".badge").className = "badge ok";
+      $("stage-retrieval").querySelector(".badge").textContent = ev.total + ' ' + t('badge_hits');
+      break;
+    }
+    case "react_prep": {
+      appendStage("react", t('stage_react'), t('badge_running'), "accent")
+        .innerHTML = kv([
+          [t('label_route'), ev.route],
+          [t('label_tools_available'), ev.tools_available],
+          [t('label_sys_prompt_len'), ev.system_prompt_len],
+          [t('label_user_prompt_len'), ev.user_prompt_len],
+        ]);
+      break;
+    }
+    case "react_step_start": {
+      const body = $("stage-react").querySelector(".stage-body");
+      const stepDiv = document.createElement("div");
+      stepDiv.className = "stage";
+      stepDiv.id = "step-" + ev.step;
+      stepDiv.style.marginTop = "10px";
+      stepDiv.style.background = "transparent";
+      stepDiv.style.padding = "0";
+      stepDiv.style.border = "0";
+      const ff = ev.force_finalize ? ` <span class="badge warn">${escapeHtml(t('label_force_finalize'))}</span>` : "";
+      stepDiv.innerHTML = `<div class="stage-head">
+          <span>▸ ${escapeHtml(t('step'))} ${ev.step}</span>
+          <span class="badge">${escapeHtml(t('tokens'))}=${ev.tokens_used.toLocaleString()}</span>${ff}
+          <span class="spinner"></span>
+        </div><div class="step-body"></div>`;
+      body.appendChild(stepDiv);
+      break;
+    }
+    case "react_tool_call": {
+      const step = $("step-" + ev.step);
+      if (!step) return;
+      const body = step.querySelector(".step-body");
+      const tc = document.createElement("div");
+      tc.className = "tool-call" + (ev.errored ? " err" : "");
+      tc.innerHTML = `<div><span class="name">${escapeHtml(ev.tool)}</span>(<span class="args">${escapeHtml(ev.args)}</span>)</div>
+        <div class="res">${escapeHtml(ev.result_preview)}</div>`;
+      body.appendChild(tc);
+      break;
+    }
+    case "react_terminate": {
+      document.querySelectorAll(".spinner").forEach(s => s.remove());
+      const cls = ev.verdict === "diagnosed" ? "ok" : "warn";
+      const head = $("stage-react").querySelector(".stage-head .badge");
+      head.className = "badge " + cls;
+      head.textContent = tVerdict(ev.verdict);
+      const body = $("stage-react").querySelector(".stage-body");
+      const fa = document.createElement("div");
+      fa.style.marginTop = "10px";
+      fa.innerHTML = `<details open><summary>${escapeHtml(t('final_answer_label'))} (${ev.content.length} ${t('chars')}, ${t('iter')}=${ev.iterations}, ${t('tokens')}=${ev.tokens_used.toLocaleString()})</summary>
+        <pre class="report" style="max-height: 40vh;">${escapeHtml(ev.content)}</pre></details>`;
+      body.appendChild(fa);
+      break;
+    }
+    case "bind_claims": {
+      const body = appendStage("bind", t('stage_bind'),
+                                ev.groundedness || t('none'),
+                                ev.groundedness === "grounded" ? "ok" : "warn");
+      let h = kv([
+        [t('label_groundedness'), ev.groundedness || t('none')],
+        [t('label_verified'), ev.verified_claims_n],
+        [t('label_speculative'), ev.speculative_claims_n],
+      ]);
+      if (ev.claims.length) {
+        h += '<div class="hr"></div><ul class="ev-list">';
+        for (const c of ev.claims) {
+          const mark = c.verified ? "✓" : "✗";
+          h += `<li>${mark} ${escapeHtml(c.text)}</li>`;
+        }
+        h += '</ul>';
+      }
+      body.innerHTML = h;
+      break;
+    }
+    case "report": {
+      const body = appendStage("report", t('stage_report'),
+                                ev.report_md_len + ' ' + t('chars'), "ok");
+      body.innerHTML = `<pre class="report">${escapeHtml(ev.report_md)}</pre>`;
+      break;
+    }
+    case "error": {
+      appendStage("err-" + Date.now(),
+                   t('status_error') + ' · ' + t('err_stage') + ' = ' + (ev.stage || 'pipeline'),
+                   t('status_error'), "err").innerHTML =
+        `<div>${escapeHtml(ev.message)}</div>
+         <details><summary>${escapeHtml(t('err_traceback'))}</summary>
+           <pre class="report">${escapeHtml(ev.trace || '')}</pre>
+         </details>`;
+      break;
+    }
+    case "done":
+      status.dataset.state = 'done';
+      status.textContent = t('status_done');
+      btn.disabled = false;
+      break;
+  }
+}
+
+// ── Re-render full event log under a new language ─────────────────────────
+
+function rerenderAll() {
+  renderShell();
+  out.innerHTML = '';
+  for (const ev of events) handle(ev);
+}
+
+function ingest(ev) {
+  events.push(ev);
+  handle(ev);
+}
+
+// ── Language toggle ───────────────────────────────────────────────────────
+
+$('btn-lang').onclick = () => {
+  currentLang = currentLang === 'zh' ? 'en' : 'zh';
+  localStorage.setItem('lang', currentLang);
+  rerenderAll();
+};
+
+// ── Form actions ──────────────────────────────────────────────────────────
+
+$("btn-clear").onclick = () => {
+  out.innerHTML = "";
+  events.length = 0;
+  status.dataset.state = 'ready';
+  status.textContent = t('status_ready');
+};
+$("btn-sample").onclick = () => { $("raw-input").value = SAMPLE; };
+
+btn.onclick = async () => {
+  const raw = $("raw-input").value.trim();
+  if (!raw) {
+    status.dataset.state = 'empty';
+    status.textContent = t('status_empty');
+    return;
+  }
+  out.innerHTML = "";
+  events.length = 0;
+  btn.disabled = true;
+  status.dataset.state = 'running';
+  status.innerHTML = '<span class="spinner"></span> ' + t('status_running');
+
+  try {
+    const resp = await fetch("/api/diagnose-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw_input: raw, lang: currentLang }),
+    });
+    if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 2);
+        if (!chunk.startsWith("data:")) continue;
+        const payload = chunk.slice(5).trim();
+        try { ingest(JSON.parse(payload)); }
+        catch (e) { console.error("SSE parse error", e, payload); }
+      }
+    }
+  } catch (e) {
+    status.dataset.state = 'error';
+    status.dataset.errmsg = e.message;
+    status.textContent = t('status_error') + ': ' + e.message;
+  } finally {
+    btn.disabled = false;
+    if (status.dataset.state === 'running') {
+      status.dataset.state = 'done';
+      status.textContent = t('status_done');
+    }
+  }
+};
+
+// ── Initial render ────────────────────────────────────────────────────────
+
+renderShell();
+status.dataset.state = 'ready';
+</script>
+</body>
+</html>

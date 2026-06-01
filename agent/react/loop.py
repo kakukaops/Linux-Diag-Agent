@@ -55,12 +55,26 @@ class ReactResult:
 
 def run_react_loop(*, provider, registry: ToolRegistry, route: str,
                    system_prompt: str, user_prompt: str,
-                   max_iter: int = MAX_ITER) -> ReactResult:
+                   max_iter: int = MAX_ITER,
+                   on_event=None) -> ReactResult:
     """Run the ReAct investigation loop until a verdict is reached.
 
     `provider` is any object with a `.chat(ChatRequest) -> ChatResponse`
     method — i.e. the LLMProvider protocol from llm/provider/base.py.
+
+    `on_event` (optional) is `Callable[[dict], None]` invoked at key points
+    during the loop. Event types:
+      {type:"step_start", step, tokens_used, force_finalize}
+      {type:"tool_call", step, tool, args, errored, result_preview}
+      {type:"terminate", verdict, content, iterations, tokens_used}
+    Used by the web streaming pipeline; None in batch eval / CLI paths.
     """
+    def _emit(ev: dict) -> None:
+        if on_event is not None:
+            try:
+                on_event(ev)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("on_event callback raised: %s", exc)
     messages: list[Message] = [
         Message(role="system", content=system_prompt),
         Message(role="user", content=user_prompt),
@@ -110,6 +124,9 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
             ))
             finalize_reminder_added = True
         tool_choice = "none" if force_finalize else "auto"
+        _emit({"type": "step_start", "step": step,
+               "tokens_used": tokens_used,
+               "force_finalize": force_finalize})
         resp = provider.chat(ChatRequest(
             messages=messages, tools=schemas, tool_choice=tool_choice,
             temperature=0.0, stream=False,
@@ -195,6 +212,9 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
                     content = ("LLM exited with empty content and no "
                                "final/insufficient marker — treated as "
                                "insufficient evidence.")
+            _emit({"type": "terminate", "verdict": verdict,
+                   "content": content, "iterations": step,
+                   "tokens_used": tokens_used})
             return ReactResult(verdict, content, step, messages, trace,
                                tokens_used, list(seen_hashes))
 
@@ -222,6 +242,9 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
                           # "did get_regression_fixes return a revert warning,
                           # and did the agent surface it in the final answer".
                           "result_preview": (content or "")[:300]})
+            _emit({"type": "tool_call", "step": step, "tool": name,
+                   "args": raw_args[:500], "errored": errored,
+                   "result_preview": (content or "")[:500]})
             # v2.3: harvest commit hashes from this tool's output. Regex
             # matches both short (12) and full (40) lowercase hex hashes; we
             # store the 12-prefix as the canonical key (matches recall@10's

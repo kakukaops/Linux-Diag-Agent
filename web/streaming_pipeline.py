@@ -193,20 +193,88 @@ def _run_react_streamed(state: dict, lang: str = "zh") -> Iterator[dict]:
     yield from _run_bind_and_report(state, lang=lang)
 
 
+_OVERLAP_THRESHOLD = 0.20  # mirror agent/diagnosis/nodes.py
+
+
 def _run_bind_and_report(state: dict, lang: str = "zh") -> Iterator[dict]:
     from agent.diagnosis.nodes import bind_claims
     from agent.report.renderer import render_md
 
     state = bind_claims(state)
+    claims = state.get("claims") or []
+
+    # Build evidence-by-id maps so we can show the user which retrieved
+    # evidence row each cited ref points at (Bug 2 fix: previously the UI
+    # only saw the verdict, not what was checked).
+    evidence = state.get("evidence") or []
+    ev_by_id: dict[str, dict] = {}
+    for ev in evidence:
+        for k in ("commit_hash", "message_id", "cve_id"):
+            v = ev.get(k)
+            if v:
+                ev_by_id[str(v)] = ev
+        if ev.get("bug_id"):
+            ev_by_id[str(ev["bug_id"])] = ev
+
+    enriched: list[dict] = []
+    for c in claims[:8]:
+        refs = c.get("evidence_refs") or []
+        strength = float(c.get("evidence_strength") or 0.0)
+        verified = bool(c.get("verified"))
+
+        # For each cited ref, attach the actual evidence row (title +
+        # route + score) so the UI can show "checked against X".
+        cited: list[dict] = []
+        unresolved: list[str] = []
+        for r in refs:
+            raw_ref = r[5:] if isinstance(r, str) and r.startswith("AUTO:") else r
+            ev_row = ev_by_id.get(str(raw_ref))
+            if ev_row:
+                cited.append({
+                    "ref": str(r),
+                    "auto_attached": isinstance(r, str) and r.startswith("AUTO:"),
+                    "route": str(ev_row.get("route", "")),
+                    "title": (ev_row.get("title") or "")[:160],
+                    "commit_hash": (ev_row.get("commit_hash") or "")[:12],
+                })
+            else:
+                unresolved.append(str(r))
+
+        # Human-readable reason for verified / speculative outcome
+        if verified:
+            reason = ("evidence_strength {strength:.2f} ≥ "
+                      "{thr:.2f}").format(strength=strength,
+                                          thr=_OVERLAP_THRESHOLD)
+        elif not refs:
+            reason = "LLM cited no evidence at all"
+        elif cited and strength < _OVERLAP_THRESHOLD:
+            reason = ("cited evidence found, but semantic overlap "
+                      "{strength:.2f} < {thr:.2f}").format(
+                strength=strength, thr=_OVERLAP_THRESHOLD)
+        elif unresolved and not cited:
+            reason = ("cited IDs {refs} not present in retrieved evidence "
+                      "pool").format(refs=unresolved[:3])
+        else:
+            reason = "evidence too thin to confirm"
+
+        enriched.append({
+            "text": (c.get("text") or "")[:400],
+            "verified": verified,
+            "refs": [str(r) for r in refs],
+            "cited_evidence": cited,
+            "unresolved_refs": unresolved,
+            "evidence_strength": round(strength, 3),
+            "overlap_threshold": _OVERLAP_THRESHOLD,
+            "reason": reason,
+        })
+
     yield {"type": "bind_claims",
            "groundedness": state.get("groundedness"),
            "verified_claims_n": len(state.get("verified_claims") or []),
            "speculative_claims_n": len(state.get("speculative_claims") or []),
-           "claims": [
-               {"text": (c.get("text") or "")[:160],
-                "verified": bool(c.get("verified"))}
-               for c in (state.get("claims") or [])[:8]
-           ]}
+           "overlap_threshold": _OVERLAP_THRESHOLD,
+           "evidence_pool_size": len(evidence),
+           "claims": enriched}
 
     md = render_md(state, lang=lang)
     yield {"type": "report",

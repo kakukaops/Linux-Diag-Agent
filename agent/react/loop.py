@@ -260,17 +260,34 @@ def run_react_loop(*, provider, registry: ToolRegistry, route: str,
         # Failure handling (ADR-019 D4, M22 §4.3): a tool stuck failing means
         # the evidence isn't reachable → insufficient_evidence; the same call
         # repeated means the LLM is looping without progress → max_iter_reached.
+        # Bug fix 2026-06-01: every fallback return path now emits the
+        # 'terminate' event so the web UI's spinner cleanup runs in all
+        # cases — previously only the natural <final_answer> path emitted,
+        # leaving step spinners spinning forever on the four fallback
+        # routes (REPEAT_LIMIT failures / calls / TOKEN_BUDGET / MAX_ITER).
         if max(fail_counts.values(), default=0) >= REPEAT_LIMIT:
+            _emit({"type": "terminate", "verdict": "insufficient_evidence",
+                   "content": "", "iterations": step,
+                   "tokens_used": tokens_used})
             return ReactResult("insufficient_evidence", "", step,
                                messages, trace, tokens_used, list(seen_hashes))
         if max(call_counts.values(), default=0) >= REPEAT_LIMIT:
+            _emit({"type": "terminate", "verdict": "max_iter_reached",
+                   "content": "", "iterations": step,
+                   "tokens_used": tokens_used})
             return ReactResult("max_iter_reached", "", step,
                                messages, trace, tokens_used, list(seen_hashes))
         if tokens_used >= TOKEN_BUDGET:           # ADR-019 D3 cost ceiling
+            _emit({"type": "terminate", "verdict": "budget_exhausted",
+                   "content": "", "iterations": step,
+                   "tokens_used": tokens_used})
             return ReactResult("budget_exhausted", "", step,
                                messages, trace, tokens_used, list(seen_hashes))
 
         # TODO(M22 D5): checkpointer.save(state) after each step
 
+    _emit({"type": "terminate", "verdict": "max_iter_reached",
+           "content": "", "iterations": max_iter,
+           "tokens_used": tokens_used})
     return ReactResult("max_iter_reached", "", max_iter, messages, trace,
                        tokens_used, list(seen_hashes))

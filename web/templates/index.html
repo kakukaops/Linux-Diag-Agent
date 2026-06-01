@@ -89,6 +89,25 @@
                        max-height: 60px; overflow: hidden;
                        white-space: pre-wrap; }
     .tool-call.err { border-left-color: var(--err); }
+    .claim {
+      border-left: 3px solid var(--border);
+      padding: 8px 12px; margin: 8px 0;
+      background: rgba(255,255,255,.02);
+      border-radius: 0 4px 4px 0;
+    }
+    .claim.verified { border-left-color: var(--ok); }
+    .claim.speculative { border-left-color: var(--warn); }
+    .claim-head { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+    .claim-text { color: var(--fg); flex: 1; }
+    .claim-meta { color: var(--muted); font-size: 11px; margin-top: 4px;
+                   display: flex; gap: 6px; flex-wrap: wrap; }
+    .claim-meta .dim { opacity: 0.6; }
+    .claim-section { margin-top: 6px; font-size: 11px; }
+    .claim-section-label { color: var(--muted); margin-right: 4px; }
+    .claim code {
+      background: rgba(255,255,255,.06); padding: 1px 4px;
+      border-radius: 3px; font-family: var(--mono); font-size: 10px;
+    }
     .ev-list { font-family: var(--mono); font-size: 11px; color: var(--muted); }
     .ev-list li { padding: 2px 0; }
     pre.report {
@@ -208,6 +227,16 @@ const LANG = {
     label_verified: '已验证声明',
     label_speculative: '推测声明',
     label_claims: '声明',
+    label_pool_size: '候选证据池',
+    label_threshold: '验证阈值',
+    label_overlap: '语义重叠度',
+    label_cited_evidence: '所引用证据',
+    label_unresolved: '未匹配的引用',
+    label_reason: '判定原因',
+    label_no_refs: 'LLM 未引用任何证据',
+    auto_attached_badge: '自动附加',
+    verified_yes: '✓ 已验证',
+    verified_no: '✗ 未通过',
     final_answer_label: '最终答案',
     err_stage: '阶段',
     err_traceback: '错误堆栈',
@@ -268,9 +297,19 @@ const LANG = {
     label_user_prompt_len: 'user_prompt_len',
     label_force_finalize: 'force_finalize',
     label_groundedness: 'groundedness',
-    label_verified: 'verified_claims',
-    label_speculative: 'speculative_claims',
+    label_verified: 'verified claims',
+    label_speculative: 'speculative claims',
     label_claims: 'claims',
+    label_pool_size: 'evidence pool size',
+    label_threshold: 'verification threshold',
+    label_overlap: 'semantic overlap',
+    label_cited_evidence: 'cited evidence',
+    label_unresolved: 'unresolved refs',
+    label_reason: 'reason',
+    label_no_refs: 'LLM cited no evidence',
+    auto_attached_badge: 'auto-attached',
+    verified_yes: '✓ verified',
+    verified_no: '✗ not verified',
     final_answer_label: 'final answer',
     err_stage: 'stage',
     err_traceback: 'traceback',
@@ -350,6 +389,38 @@ function kv(rows) {
     h += `<div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div>`;
   }
   return h + '</div>';
+}
+
+function renderClaim(c) {
+  const verdict = c.verified
+    ? `<span class="badge ok">${escapeHtml(t('verified_yes'))}</span>`
+    : `<span class="badge warn">${escapeHtml(t('verified_no'))}</span>`;
+  const strength = `${t('label_overlap')}=${c.evidence_strength.toFixed(2)}`;
+  let cited = '';
+  if (c.cited_evidence && c.cited_evidence.length) {
+    cited = `<div class="claim-section"><span class="claim-section-label">${escapeHtml(t('label_cited_evidence'))}:</span><ul class="ev-list">`;
+    for (const e of c.cited_evidence) {
+      const auto = e.auto_attached
+        ? ` <span class="badge accent">${escapeHtml(t('auto_attached_badge'))}</span>` : '';
+      const hash = e.commit_hash ? ` <code>[${escapeHtml(e.commit_hash)}]</code>` : '';
+      cited += `<li>[${escapeHtml(e.route)}]${hash} ${escapeHtml(e.title)}${auto}</li>`;
+    }
+    cited += '</ul></div>';
+  }
+  let unresolved = '';
+  if (c.unresolved_refs && c.unresolved_refs.length) {
+    unresolved = `<div class="claim-section"><span class="claim-section-label">${escapeHtml(t('label_unresolved'))}:</span> <code>${escapeHtml(c.unresolved_refs.join(', '))}</code></div>`;
+  }
+  return `<div class="claim ${c.verified ? 'verified' : 'speculative'}">
+    <div class="claim-head">${verdict} <span class="claim-text">${escapeHtml(c.text)}</span></div>
+    <div class="claim-meta">
+      <span>${escapeHtml(strength)}</span>
+      <span class="dim">·</span>
+      <span class="dim">${escapeHtml(t('label_reason'))}: ${escapeHtml(c.reason)}</span>
+    </div>
+    ${cited}
+    ${unresolved}
+  </div>`;
 }
 
 function handle(ev) {
@@ -478,6 +549,10 @@ function handle(ev) {
       break;
     }
     case "bind_claims": {
+      // Defensive: ensure any lingering ReAct step spinner is cleaned up
+      // by the time we render Stage 4 — this is "always after the loop"
+      // territory and the loop must have ended one way or another.
+      document.querySelectorAll(".spinner").forEach(s => s.remove());
       const body = appendStage("bind", t('stage_bind'),
                                 ev.groundedness || t('none'),
                                 ev.groundedness === "grounded" ? "ok" : "warn",
@@ -486,14 +561,14 @@ function handle(ev) {
         [t('label_groundedness'), ev.groundedness || t('none')],
         [t('label_verified'), ev.verified_claims_n],
         [t('label_speculative'), ev.speculative_claims_n],
+        [t('label_pool_size'), ev.evidence_pool_size],
+        [t('label_threshold'), `≥ ${ev.overlap_threshold.toFixed(2)}`],
       ]);
-      if (ev.claims.length) {
-        h += '<div class="hr"></div><ul class="ev-list">';
+      if (ev.claims && ev.claims.length) {
+        h += '<div class="hr"></div>';
         for (const c of ev.claims) {
-          const mark = c.verified ? "✓" : "✗";
-          h += `<li>${mark} ${escapeHtml(c.text)}</li>`;
+          h += renderClaim(c);
         }
-        h += '</ul>';
       }
       body.innerHTML = h;
       break;

@@ -28,27 +28,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-_LANG_DIRECTIVE = {
-    "zh": (
-        "\n\n## Output Language Directive\n"
-        "Respond to the user in 简体中文 for all human-readable narrative "
-        "sections (## Root Cause, ## Fix Recommendation, ## Confidence, "
-        "## Evidence trace explanations). KEEP THESE UNTRANSLATED, verbatim "
-        "in their original form: kernel function names, commit hashes, CVE "
-        "IDs, file paths, kernel config tokens, tool names, error codes "
-        "(ENOMEM / EINVAL …), and English technical proper nouns like "
-        "'memcg', 'OOM', 'KASAN', 'use-after-free' that have no settled "
-        "Chinese rendering. The Markdown section headers themselves "
-        "(## Root Cause / ## Fix Recommendation / ## Confidence) STAY in "
-        "English — only the prose under each header is translated."
-    ),
-    "en": (
-        "\n\n## Output Language Directive\n"
-        "Respond to the user in English."
-    ),
-}
-
-
 def stream_diagnose(raw_input: str, lang: str = "zh") -> Iterator[dict]:
     """Run the full pipeline, yielding events stage-by-stage.
 
@@ -148,10 +127,9 @@ def _run_react_streamed(state: dict, lang: str = "zh") -> Iterator[dict]:
     provider = get_provider(cfg.llm.chat.backend)
     registry = build_registry()
     route = state.get("diagnostic_route", "unknown")
-    system_prompt = render_system_prompt(route, state)
-    # Append output-language directive (kernel.md is in English; we ask the
-    # LLM to translate narrative sections only — see _LANG_DIRECTIVE).
-    system_prompt = system_prompt + _LANG_DIRECTIVE.get(lang, _LANG_DIRECTIVE["zh"])
+    # Bilingual prompt: render_system_prompt(lang=zh) picks kernel.zh.md +
+    # Chinese termination footer; lang=en uses the English originals.
+    system_prompt = render_system_prompt(route, state, lang=lang)
     user_prompt = _build_user_prompt(state)
 
     yield {"type": "react_prep",

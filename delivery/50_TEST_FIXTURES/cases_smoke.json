@@ -1,0 +1,22 @@
+[
+  {
+    "id": "smoke-product-001",
+    "category": "smoke",
+    "kernel_version": "OLK-6.6",
+    "expected_route": "kernel",
+    "expected_fault_kind": "oom",
+    "primary_goal": "kg_efficiency",
+    "raw_input": "我们生产环境一台 OLK-6.6 节点上跑的 Java 反向代理服务，最近频繁出现 memcg OOM kill，进程被杀后重启又能撑几小时，反复发生。下面是其中一次的 dmesg 片段：\n\n[12345.677000] oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,oom_memcg=/app/java,task_memcg=/app/java,task=java,pid=8821,uid=1000\n[12345.677500] Out of memory: Killed process 8821 (java) total-vm:8192000kB anon-rss:4019200kB file-rss:13312kB UID:1000 pgtables:8392kB oom_score_adj:0\n[12345.678123] CPU: 4 PID: 8821 Comm: java Tainted: G        W   OE     6.6.0-21.0.0.21.oe2403.x86_64 #1\n[12345.679001] Hardware name: OpenStack Foundation OpenStack Nova, BIOS 1.16.3 09/01/2024\n[12345.680111] Call Trace:\n[12345.680112]  <TASK>\n[12345.681001]  dump_stack_lvl+0x4d/0x6c\n[12345.682002]  dump_header+0x4f/0x250\n[12345.683003]  oom_kill_process+0x10c/0x110\n[12345.684004]  out_of_memory+0x265/0x4a0\n[12345.685005]  mem_cgroup_out_of_memory+0xed/0x100\n[12345.686006]  try_charge_memcg+0x71f/0x880\n[12345.687007]  mem_cgroup_charge+0x83/0xe0\n[12345.688008]  __filemap_get_folio+0x294/0x3f0\n[12345.689009]  filemap_fault+0x16a/0x9c0\n[12345.690010]  __do_fault+0x36/0x150\n[12345.691011]  do_pte_missing+0x167/0x350\n[12345.692012]  handle_mm_fault+0xdc0/0x10d0\n[12345.693013]  do_user_addr_fault+0x21b/0x680\n[12345.694014]  exc_page_fault+0x82/0x190\n[12345.695015]  asm_exc_page_fault+0x27/0x30\n[12345.696016] RIP: 0033:0x7f8a3c2e1234\n[12345.697017]  </TASK>\n[12345.698018] Memory cgroup out of memory: Killed process 8821 (java) total-vm:8192000kB anon-rss:4019200kB file-rss:13312kB UID:1000 pgtables:8392kB oom_score_adj:0\n\n问题：这是内核 bug 还是配置/工作负载问题？该怎么处理？",
+    "question": "OLK-6.6 生产 Java 反代节点反复触发 memcg OOM kill，dmesg 显示通过 filemap_fault → mem_cgroup_charge → try_charge_memcg 路径走到 OOM。需要判断是内核 bug 还是配置问题，并给出处理建议。",
+    "expected_commit_hashes": [],
+    "expected_bug_ids": [],
+    "expected_kg_paths": [
+      "find_similar_crashes",
+      "find_commits_touching_symbol",
+      "search_lkml",
+      "search_bugs",
+      "get_function_source"
+    ],
+    "notes": "Product-facing smoke case — open-ended user framing. The diagnostic flow is INTENTIONALLY NOT prescribed; the agent should decide whether this is a kernel bug or a configuration/workload issue and respond appropriately (likely Form C 'no commit-level fix, tune memory.max / workload / overcommit'). expected_kg_paths is the minimum set a thoughtful investigation would touch — Phase 0 (similar crashes), Phase 1 symbol lookup (try_charge_memcg / mem_cgroup_charge to understand the mechanism), Phase 2 LKML/bug search for prior production reports, and get_function_source to read the actual memcg-charge logic. Backport-verification tools (get_regression_fixes / check_backport_status / lookup_subsystem_owner) are NOT in expected paths because for a 'by-design' OOM the agent shouldn't need them. For the QA coverage case that forces ALL paths, see eval/data/cases_coverage.json."
+  }
+]

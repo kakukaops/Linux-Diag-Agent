@@ -5,6 +5,41 @@
 
 ---
 
+## 蓝图 · 目标架构与 v4 落地范围
+
+> **规划大胆、执行务实**：本节给出完整 Linux 故障诊断智能体的目标架构（北极星，完整蓝图与分期见 `PRD.md` §0.5）；**v4 = 蓝图 P2 期，只动其中一小块**。本文档其余 §0–§7 全部是 P2 的落地 delta。
+> 期次标记：`P1` 已建 · `P2` 本期 · `P3` 下一步 · `P4` 愿景。
+
+### 目标架构（六组件，按"感知 → 内核 → 处置 + 反馈回灌"）
+
+- **Perception 感知**：dmesg/sosreport `P1` → vmcore/kdump `P2` → 实时可观测 Prometheus/Loki `P3` → ftrace/perf/eBPF `P4`
+- **Planner 规划**：Triage 路由 `P1` · ReAct + 自我批驳 `P1` · 多故障分解 / 因果推理 `P4`
+- **Memory 记忆**：Semantic 语义=KG `P1` · Episodic 情景+案例库 `P2/P3` · Working 上下文 `P1` · Procedural SOP `P3` · Organizational 组织 `P3`
+- **Tools 工具**：KG/检索 `P1` · 取证 栈解码/drgn `P2` · 实时查询 `P3` · eBPF 编排/沙箱复现/bisect `P4`
+- **Feedback 反馈**：会话内 自我批驳+证据校验 `P1/P2` → 在线学习闭环 诊断→案例库 `P3`
+- **Output 处置**：报告+证据 trace `P1` · 定界+handoff `P2` · 工单/IM 集成 `P3` · 受控处置建议 `P4`
+- **Boundary 定界（横切）**：应用/容器/驱动/硬件/OS 多层责任归属 `P2`
+- **红线**：① 只读·非侵入　② 证据可追溯·不编造
+
+### v4（P2）本期落点（蓝图组件 → 本文档章节 / 文件）
+
+| 蓝图组件 / 能力 | v4 落点 | 期 |
+|---|---|---|
+| Feedback 会话内 grounding | §1 Evidence Ledger（`agent/evidence/ledger.py` · `agent/diagnosis/nodes.py::bind_claims`） | P2 |
+| Output 可追溯 | §1 + `agent/report/renderer.py` | P2 |
+| Perception vmcore + Tools 取证 | §2（`mcp_servers/crash_forensics/` · `agent/react/tools/vmcore_tools.py` · prompts Phase 1.5） | P2 |
+| Boundary 定界 + Output handoff | §3（`agent/boundary/` · renderer） | P2 |
+| Memory / Semantic 上游链 | §4（`ingest/mainline,stable` · `graph/linker.py`） | P2（P1 档） |
+| Planner / Tools 效率 | §4（signature 快路径 · 分级模型） | P2（P1 档） |
+
+### 后续期的架构预留（v4 不实现，但设计上留好接口）
+
+- **Perception 实时接入（P3）**：观测性走 **adapter 模式**（ADR-021），只读拉取 Prometheus/Loki，不直连 /proc；agent 以 Tool 形式查询，便于 mock/测试。
+- **Memory 案例库 + 在线学习（P3）**：诊断结果 + 工程师确认落表（现 `80_KNOWN_LIMITS` 将 `agent_tool_trace` 持久化搁置），沉淀为 Episodic 案例，供 `find_similar_crashes` 与检索复用——P0-1 的 Evidence Ledger 是它的数据前身。
+- **Tools 动态分析（P4）**：eBPF/ftrace 编排与沙箱复现作为新 Tool 类别接入 `agent/react/tools/`，严守只读 / 旁路红线。
+
+---
+
 ## 0. 改动总览（一张图）
 
 ```

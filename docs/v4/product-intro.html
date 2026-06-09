@@ -177,78 +177,84 @@ hr{border:0;border-top:1px solid #e2e6ea;margin:1.6em 0}
 <p class="lead">我们的目标，从一开始就是一个<strong>通用的 Linux 故障诊断智能体</strong>。它本质上是<strong>通用智能体架构（Planner · Memory · Tools · Feedback · Perception）在内核诊断域的特化</strong>——Memory 落成内核知识图谱，Tools 落成内核取证工具集，Feedback 落成 ReAct + 自我批驳 + 证据校验：</p>
 
 <figure>
-<svg viewBox="0 0 800 408" font-family="-apple-system,'PingFang SC','Microsoft YaHei',sans-serif">
+<svg viewBox="0 0 820 520" font-family="-apple-system,'PingFang SC','Microsoft YaHei',sans-serif">
   <defs>
     <marker id="aga" markerWidth="9" markerHeight="9" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#3f9a57"/></marker>
     <marker id="agf" markerWidth="9" markerHeight="9" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#bc4c00"/></marker>
   </defs>
 
-  <!-- legend -->
+  <!-- legend: 色块=成熟度 -->
   <text x="8" y="20" font-size="10.5" font-weight="700" fill="#57606a">状态</text>
-  <rect x="46"  y="9" width="56" height="15" rx="7.5" fill="#dafbe1" stroke="#57ab5a"/><text x="74"  y="20" text-anchor="middle" font-size="9.5" fill="#1a7f37">已就绪</text>
-  <rect x="108" y="9" width="56" height="15" rx="7.5" fill="#fff1e0" stroke="#e0a458"/><text x="136" y="20" text-anchor="middle" font-size="9.5" fill="#bc4c00">接入中</text>
-  <rect x="170" y="9" width="44" height="15" rx="7.5" fill="#fff8e6" stroke="#d4a72c"/><text x="192" y="20" text-anchor="middle" font-size="9.5" fill="#8a6d1f">在建</text>
-  <rect x="220" y="9" width="56" height="15" rx="7.5" fill="#ddf4ff" stroke="#6cb6ff"/><text x="248" y="20" text-anchor="middle" font-size="9.5" fill="#0969da">规划中</text>
-  <text x="300" y="20" font-size="9.7" fill="#8c959f">通用智能体架构（Planner · Memory · Tools · Feedback · Perception）的内核诊断特化</text>
+  <rect x="42"  y="9" width="52" height="15" rx="7.5" fill="#eaf6ee" stroke="#57ab5a"/><text x="68"  y="20" text-anchor="middle" font-size="9.3" fill="#0e4d27">已就绪</text>
+  <rect x="98"  y="9" width="52" height="15" rx="7.5" fill="#fff7ef" stroke="#e0a458"/><text x="124" y="20" text-anchor="middle" font-size="9.3" fill="#7d3f00">接入中</text>
+  <rect x="154" y="9" width="40" height="15" rx="7.5" fill="#fff8e6" stroke="#d4a72c"/><text x="174" y="20" text-anchor="middle" font-size="9.3" fill="#7d4e00">在建</text>
+  <rect x="198" y="9" width="52" height="15" rx="7.5" fill="#eef6ff" stroke="#6cb6ff"/><text x="224" y="20" text-anchor="middle" font-size="9.3" fill="#0d3b66">规划中</text>
+  <rect x="254" y="9" width="40" height="15" rx="7.5" fill="#f1f3f5" stroke="#afb8c1"/><text x="274" y="20" text-anchor="middle" font-size="9.3" fill="#57606a">愿景</text>
+  <text x="305" y="20" font-size="9.3" fill="#8c959f">通用智能体六组件 · 色块=成熟度（完全体蓝图，详见 PRD §0.5）</text>
+
+  <!-- Feedback loop -->
+  <path d="M 700,72 C 700,48 430,48 400,86" fill="none" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#agf)"/>
+  <text x="410" y="42" text-anchor="middle" font-size="9" fill="#bc4c00">Feedback / Reflection：会话内 自我批驳 + 证据校验 → 在线学习闭环（案例库）规划中</text>
 
   <!-- Perception (left) -->
-  <rect x="8" y="120" width="128" height="104" rx="9" fill="#eaf6ee" stroke="#3f9a57" stroke-width="1.4"/>
-  <text x="72" y="146" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0e4d27">Perception</text>
-  <text x="72" y="162" text-anchor="middle" font-size="9.3" fill="#5a7766">感知 / 输入解析</text>
-  <text x="72" y="181" text-anchor="middle" font-size="9.3" fill="#23612f">dmesg·sosreport</text>
-  <text x="72" y="195" text-anchor="middle" font-size="9.3" fill="#23612f">事件抽取</text>
-  <text x="72" y="214" text-anchor="middle" font-size="9" fill="#0969da">在线指标 规划中</text>
-  <line x1="136" y1="172" x2="158" y2="172" stroke="#3f9a57" stroke-width="1.8" marker-end="url(#aga)"/>
+  <rect x="8" y="72" width="180" height="172" rx="10" fill="#fcfdfe" stroke="#c8d0d8" stroke-width="1.3"/>
+  <text x="16" y="88" font-size="10.5" font-weight="700" fill="#1f2328">Perception 感知</text>
+  <rect x="16" y="94" width="164" height="30" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="98" y="113" text-anchor="middle" font-size="8.6" fill="#0e4d27">dmesg / sosreport / journal</text>
+  <rect x="16" y="130" width="164" height="30" rx="6" fill="#fff7ef" stroke="#e0a458"/><text x="98" y="149" text-anchor="middle" font-size="8.6" fill="#7d3f00">vmcore / kdump</text>
+  <rect x="16" y="166" width="164" height="30" rx="6" fill="#eef6ff" stroke="#6cb6ff"/><text x="98" y="185" text-anchor="middle" font-size="8.6" fill="#0d3b66">实时可观测 Prometheus/Loki</text>
+  <rect x="16" y="202" width="164" height="30" rx="6" fill="#f1f3f5" stroke="#afb8c1"/><text x="98" y="221" text-anchor="middle" font-size="8.6" fill="#57606a">ftrace / perf / eBPF</text>
+  <line x1="188" y1="150" x2="198" y2="150" stroke="#3f9a57" stroke-width="1.8" marker-end="url(#aga)"/>
 
   <!-- Agent Core container -->
-  <rect x="160" y="58" width="320" height="246" rx="11" fill="#f7fcf9" stroke="#3f9a57" stroke-width="1.4"/>
-  <text x="170" y="76" font-size="12" font-weight="700" fill="#0e4d27">Agent Core（智能体内核）</text>
+  <rect x="200" y="64" width="424" height="336" rx="11" fill="#f7fafc" stroke="#c8d0d8" stroke-width="1.3"/>
+  <text x="210" y="80" font-size="11.5" font-weight="700" fill="#1f2328">Agent Core（智能体内核）</text>
 
   <!-- Planner -->
-  <rect x="176" y="86" width="288" height="64" rx="8" fill="#eaf6ee" stroke="#3f9a57"/>
-  <text x="184" y="106" font-size="12" font-weight="700" fill="#0e4d27">Planner / Reasoning</text>
-  <text x="184" y="123" font-size="9.5" fill="#23612f">确定性 triage 路由 + ReAct 循环</text>
-  <text x="184" y="138" font-size="9" fill="#5a7766">（ReAct，非 plan-and-execute）· 按故障类型 Profile</text>
-  <rect x="408" y="92" width="48" height="15" rx="7.5" fill="#dafbe1" stroke="#57ab5a"/><text x="432" y="103" text-anchor="middle" font-size="9" fill="#1a7f37">已就绪</text>
+  <rect x="210" y="88" width="404" height="118" rx="8" fill="#fcfdfe" stroke="#c8d0d8"/>
+  <text x="218" y="104" font-size="10.5" font-weight="700" fill="#1f2328">Planner / Reasoning</text>
+  <rect x="218" y="110" width="388" height="28" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="226" y="128" font-size="8.6" fill="#0e4d27">确定性 Triage（故障分类 · hardware-first · 选 Profile prompt）</text>
+  <rect x="218" y="142" width="388" height="28" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="226" y="160" font-size="8.6" fill="#0e4d27">ReAct 调研循环 + 自我批驳（observe→reason→act · Phase 0–6）</text>
+  <rect x="218" y="174" width="388" height="28" rx="6" fill="#f1f3f5" stroke="#afb8c1"/><text x="226" y="192" font-size="8.6" fill="#57606a">多故障分解 / 跨信号因果推理</text>
 
   <!-- Memory -->
-  <rect x="176" y="160" width="288" height="132" rx="8" fill="#eaf6ee" stroke="#3f9a57"/>
-  <text x="184" y="180" font-size="12" font-weight="700" fill="#0e4d27">Memory</text>
-  <rect x="408" y="166" width="48" height="15" rx="7.5" fill="#dafbe1" stroke="#57ab5a"/><text x="432" y="177" text-anchor="middle" font-size="9" fill="#1a7f37">已就绪</text>
-  <text x="184" y="204" font-size="9.3" fill="#23612f">Semantic 语义：知识图谱(commit/CVE/邮件/syzbot)</text>
-  <text x="184" y="228" font-size="9.3" fill="#23612f">Episodic 情景：find_similar_crashes（栈签名）</text>
-  <text x="184" y="252" font-size="9.3" fill="#23612f">Working 工作：ReAct 会话上下文（token 预算内）</text>
-  <text x="184" y="276" font-size="9" fill="#5a7766">长期/语义记忆即“证据底座”——故先做实（见下文）</text>
-
-  <!-- Planner <-> Tools arrows -->
-  <line x1="300" y1="304" x2="300" y2="324" stroke="#3f9a57" stroke-width="1.6" marker-end="url(#aga)"/>
-  <line x1="340" y1="324" x2="340" y2="306" stroke="#3f9a57" stroke-width="1.6" marker-end="url(#aga)"/>
-  <text x="392" y="318" font-size="8.7" fill="#5a7766">调用 / 观察</text>
-
-  <!-- Tools -->
-  <rect x="160" y="326" width="320" height="74" rx="9" fill="#eaf6ee" stroke="#3f9a57" stroke-width="1.4"/>
-  <text x="170" y="346" font-size="12" font-weight="700" fill="#0e4d27">Tools / Action</text>
-  <rect x="408" y="332" width="48" height="15" rx="7.5" fill="#dafbe1" stroke="#57ab5a"/><text x="432" y="343" text-anchor="middle" font-size="9" fill="#1a7f37">已就绪</text>
-  <text x="170" y="363" font-size="9" fill="#23612f">~32 内核领域工具：跨源检索·符号反查·commit/diff·</text>
-  <text x="170" y="377" font-size="9" fill="#23612f">backport·维护者·栈解码·vmcore 只读</text>
-  <text x="170" y="393" font-size="9" fill="#bc4c00">取证子集 接入中</text>
+  <rect x="210" y="214" width="404" height="178" rx="8" fill="#fcfdfe" stroke="#c8d0d8"/>
+  <text x="218" y="230" font-size="10.5" font-weight="700" fill="#1f2328">Memory</text>
+  <rect x="218" y="236" width="388" height="28" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="226" y="254" font-size="8.6" fill="#0e4d27"><tspan font-weight="700">Semantic 语义</tspan>　知识图谱：commit·CVE·邮件·syzbot 关系网</text>
+  <rect x="218" y="267" width="388" height="28" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="226" y="285" font-size="8.6" fill="#0e4d27"><tspan font-weight="700">Episodic 情景</tspan>　栈签名检索 find_similar_crashes（+历史案例库 规划）</text>
+  <rect x="218" y="298" width="388" height="28" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="226" y="316" font-size="8.6" fill="#0e4d27"><tspan font-weight="700">Working 工作</tspan>　ReAct 会话上下文（token 预算内）</text>
+  <rect x="218" y="329" width="388" height="28" rx="6" fill="#eef6ff" stroke="#6cb6ff"/><text x="226" y="347" font-size="8.6" fill="#0d3b66"><tspan font-weight="700">Procedural 程序性</tspan>　SOP / runbook 库</text>
+  <rect x="218" y="360" width="388" height="28" rx="6" fill="#eef6ff" stroke="#6cb6ff"/><text x="226" y="378" font-size="8.6" fill="#0d3b66"><tspan font-weight="700">Organizational 组织</tspan>　责任归属映射 · backport 策略</text>
 
   <!-- Core -> Output -->
-  <line x1="480" y1="172" x2="502" y2="172" stroke="#3f9a57" stroke-width="1.8" marker-end="url(#aga)"/>
+  <line x1="624" y1="150" x2="634" y2="150" stroke="#3f9a57" stroke-width="1.8" marker-end="url(#aga)"/>
 
-  <!-- Output -->
-  <rect x="504" y="120" width="128" height="104" rx="9" fill="#eaf6ee" stroke="#3f9a57" stroke-width="1.4"/>
-  <text x="568" y="146" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0e4d27">Output</text>
-  <text x="568" y="162" text-anchor="middle" font-size="9.3" fill="#5a7766">诊断报告</text>
-  <text x="568" y="181" text-anchor="middle" font-size="9.3" fill="#23612f">根因 · 修复 · 证据 trace</text>
-  <text x="568" y="200" text-anchor="middle" font-size="9.3" fill="#23612f">可追溯 · 不编 commit</text>
-  <text x="568" y="216" text-anchor="middle" font-size="9" fill="#8a6d1f">定界 在建</text>
+  <!-- Output (right) -->
+  <rect x="636" y="72" width="176" height="200" rx="10" fill="#fcfdfe" stroke="#c8d0d8" stroke-width="1.3"/>
+  <text x="644" y="88" font-size="10.5" font-weight="700" fill="#1f2328">Output 处置</text>
+  <rect x="644" y="94" width="160" height="30" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="724" y="113" text-anchor="middle" font-size="8.6" fill="#0e4d27">根因 + 修复（Form A/B/C）</text>
+  <rect x="644" y="130" width="160" height="30" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="724" y="149" text-anchor="middle" font-size="8.6" fill="#0e4d27">证据 trace（不编 commit）</text>
+  <rect x="644" y="166" width="160" height="30" rx="6" fill="#fff8e6" stroke="#d4a72c"/><text x="724" y="185" text-anchor="middle" font-size="8.6" fill="#7d4e00">定界 + handoff 包</text>
+  <rect x="644" y="202" width="160" height="30" rx="6" fill="#eef6ff" stroke="#6cb6ff"/><text x="724" y="221" text-anchor="middle" font-size="8.6" fill="#0d3b66">工单 / IM 集成</text>
+  <rect x="644" y="238" width="160" height="30" rx="6" fill="#f1f3f5" stroke="#afb8c1"/><text x="724" y="257" text-anchor="middle" font-size="8.6" fill="#57606a">受控处置建议（带审批门）</text>
 
-  <!-- Feedback loop (within-session) -->
-  <path d="M 568,120 C 560,40 330,40 320,82" fill="none" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#agf)"/>
-  <text x="444" y="36" text-anchor="middle" font-size="9.5" fill="#bc4c00">Feedback / Reflection：自我批驳 + 证据绑定校验（会话内）</text>
+  <!-- Core <-> Tools arrows -->
+  <line x1="400" y1="400" x2="400" y2="410" stroke="#3f9a57" stroke-width="1.6" marker-end="url(#aga)"/>
+  <line x1="440" y1="410" x2="440" y2="402" stroke="#3f9a57" stroke-width="1.6" marker-end="url(#aga)"/>
+  <text x="476" y="408" font-size="8.5" fill="#5a7766">调用 / 观察</text>
+
+  <!-- Tools (bottom, full width) -->
+  <rect x="8" y="412" width="804" height="100" rx="10" fill="#fcfdfe" stroke="#c8d0d8" stroke-width="1.3"/>
+  <text x="18" y="430" font-size="10.5" font-weight="700" fill="#1f2328">Tools / Action</text>
+  <text x="112" y="430" font-size="8.7" fill="#5a7766">~32 内核领域工具（5 类）+ 规划 / 愿景类别</text>
+  <rect x="16"  y="438" width="104" height="64" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="68"  y="460" text-anchor="middle" font-size="9" font-weight="700" fill="#0e4d27">检索 ×7</text><text x="68"  y="474" text-anchor="middle" font-size="7" fill="#5a7766">commits/lkml/cve…</text>
+  <rect x="130" y="438" width="104" height="64" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="182" y="460" text-anchor="middle" font-size="9" font-weight="700" fill="#0e4d27">代码·符号 ×14</text><text x="182" y="474" text-anchor="middle" font-size="7" fill="#5a7766">反查·diff·backport</text>
+  <rect x="244" y="438" width="104" height="64" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="296" y="460" text-anchor="middle" font-size="9" font-weight="700" fill="#0e4d27">日志 ×3</text><text x="296" y="474" text-anchor="middle" font-size="7" fill="#5a7766">parse·栈帧抽取</text>
+  <rect x="358" y="438" width="104" height="64" rx="6" fill="#eaf6ee" stroke="#57ab5a"/><text x="410" y="460" text-anchor="middle" font-size="9" font-weight="700" fill="#0e4d27">硬件 ×5</text><text x="410" y="474" text-anchor="middle" font-size="7" fill="#5a7766">MCE/EDAC 判读</text>
+  <rect x="472" y="438" width="104" height="64" rx="6" fill="#fff7ef" stroke="#e0a458"/><text x="524" y="460" text-anchor="middle" font-size="9" font-weight="700" fill="#7d3f00">vmcore 取证 ×3</text><text x="524" y="474" text-anchor="middle" font-size="7" fill="#86562a">栈解码·drgn</text>
+  <rect x="586" y="438" width="104" height="64" rx="6" fill="#eef6ff" stroke="#6cb6ff"/><text x="638" y="460" text-anchor="middle" font-size="9" font-weight="700" fill="#0d3b66">实时查询</text><text x="638" y="474" text-anchor="middle" font-size="7" fill="#3d5a73">查 Prometheus·/proc</text>
+  <rect x="700" y="438" width="104" height="64" rx="6" fill="#f1f3f5" stroke="#afb8c1"/><text x="752" y="460" text-anchor="middle" font-size="9" font-weight="700" fill="#57606a">动态分析</text><text x="752" y="474" text-anchor="middle" font-size="7" fill="#57606a">eBPF·沙箱·bisect</text>
 </svg>
-<figcaption>图 2 · 诊断智能体组件架构 —— 通用智能体架构在内核诊断域的特化。运行时反馈在会话内（自我批驳 + 证据校验）；诊断结果回灌知识图谱为规划方向（非自动）。</figcaption>
+<figcaption>图 2 · 诊断智能体组件架构（完全体蓝图）—— 通用智能体架构在内核诊断域的特化，<strong>色块表示成熟度</strong>。今天落地的是绿色（已就绪）+ 取证（接入中）+ 定界（在建）；蓝色 / 灰色为规划 / 愿景。详见 PRD §0.5。</figcaption>
 </figure>
 
 <p><strong>为什么从知识图谱做起？</strong>一个诊断 agent 的上限，不在于接了多少工具，而在于<strong>有没有一个可信的证据底座去解释这些工具吐出的信号</strong>。vmcore、Prometheus 给你的是<em>信号</em>（谁挂了、内存什么水位）；但“是不是已知 bug、谁修的、是不是我的锅”这些<em>意义</em>，只能从内核 commit / CVE / 邮件 / syzbot 这张关系网里来。没有它，LLM 接再多工具，产出的也只是“措辞自信的幻觉”。<strong>所以我们先做知识图谱——因为我们首先需要证据。</strong></p>

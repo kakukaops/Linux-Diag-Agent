@@ -30,6 +30,56 @@ v1→v3 把架构、ReAct 化、取证层脚手架、定界 PRD 都设计好了�
 
 ---
 
+## 0.5 北极星：完整 Linux 故障诊断智能体蓝图与分期
+
+> **规划大胆、执行务实。** 技术规划朝"完整的 Linux 故障诊断智能体"看齐（本节蓝图）；落地选可行性最强的先做——**v4 = 本蓝图的 P2 期**。本节是凌驾于 v4 之上的北极星，后续每一版都对照它推进。
+
+### 0.5.1 蓝图骨架 = 通用智能体六组件
+
+完整体沿通用智能体架构的六根轴拉满：**Perception 感知 · Memory 记忆 · Planner 规划 · Tools 工具 · Feedback 反馈 · Output 处置**，外加横切的 **Boundary 定界**。
+
+### 0.5.2 六组件"完全体"（目标）vs 现状
+
+| 组件 | 完全体（大胆规划的目标） | 现状 |
+|---|---|---|
+| **Perception 感知** | 吃下所有故障信号：离线文本(dmesg/sosreport/journal) → 崩溃转储(vmcore/kdump) → 实时可观测(Prometheus/Grafana/Loki) → 系统状态(/proc·/sys·.config·cmdline·lsmod·dmidecode，只读 adapter) → 追踪/性能(ftrace/perf/eBPF) → 告警(alertmanager) → 拓扑(k8s/容器/CMDB) | 仅离线文本就绪 |
+| **Memory 记忆** | ① Semantic 语义=内核知识图谱(+mainline/stable+Documentation+MAINTAINERS)；② Episodic 情景=栈签名检索 + 历史诊断案例库；③ Working 工作=会话上下文；④ Procedural 程序性=SOP/runbook 库；⑤ Organizational 组织=责任归属映射、backport 策略、内部 wiki | 语义(KG)就绪；情景部分；其余未做 |
+| **Planner 规划** | 确定性 Triage + ReAct + 假设枚举/自我批驳 → 多故障任务分解、Reflexion 重规划、跨信号因果推理(metrics+dmesg+trace) | Triage+ReAct+自我批驳 就绪 |
+| **Tools 工具** | KG/检索 + 取证(栈解码/drgn) + 实时查询(查 Prometheus/读 /proc) + 动态分析(eBPF/ftrace 编排，只读) + 验证类(backport 模拟/patch 适用性/bisect) + 沙箱复现 | KG 工具就绪；取证接入中；其余未做 |
+| **Feedback 反馈** | 会话内(自我批驳+证据校验) → 在线学习闭环(诊断+工程师确认 → 回灌案例库 & 改进检索) → process-compliance 驱动持续评测 | 仅会话内；在线闭环未做 |
+| **Output 处置** | 诊断报告+证据 trace → 定界+handoff 包 → 工单/IM 集成(Jira/飞书) → 受控处置建议(配置调优，带审批门，绝不自动改生产) | 报告就绪；定界在建；其余未做 |
+| **Boundary 定界**（横切） | 应用/容器/驱动/硬件/OS 多层责任归属 + 置信度 + handoff | 在建（v4 P0-3） |
+
+### 0.5.3 两条贯穿红线（"大胆"也不能破）
+
+① **只读·非侵入**——不 SSH 生产机执行变更；动态分析/复现走旁路或沙箱。
+② **证据可追溯·不编造**——任何组件长出的结论都要能 trace 到真实来源。
+
+### 0.5.4 可行性优先的四期路线
+
+| 期 | 主题 | 内容 | 时机理由 |
+|---|---|---|---|
+| **P1 已建** | 证据底座 | 语义记忆(KG) + ReAct + 离线文本感知 + 报告 | 没有可信证据底座，上层全是幻觉地基 |
+| **P2 = v4（本期）** | 夯实可信 + 激活已有 | 证据 grounding 兑现 · 取证层激活 · 定界落地 · 上游链 · 延迟治理 | 都是"已设计/已有代码"的兑现，投入产出比最高；grounding 是上层前提 |
+| **P3 下一步** | 接入实时 + 沉淀经验 | 在线可观测(Prometheus/Loki，只读 adapter) · 程序性记忆(SOP 库) · 情景案例库 + 在线学习闭环 · 跨信号关联 | 底座+定界稳了，接实时信号才有"意义层"去解释 |
+| **P4 愿景** | 主动诊断 + 动态分析 | eBPF/ftrace 编排 · 沙箱复现 · bisect 辅助 · 因果推理 · 受控处置建议 · 工单/IM 集成 | 高价值但高复杂/高风险，放最后，严守只读红线 |
+
+### 0.5.5 v4（P2）在蓝图中的定位
+
+v4 不新增蓝图轴，而是**兑现已有 + 激活半成品**：
+
+| v4 项 | 对应蓝图组件 |
+|---|---|
+| P0-1 证据 grounding | Feedback（会话内）+ Output（可追溯） |
+| P0-2 取证激活 | Perception（vmcore）+ Tools（栈解码/drgn） |
+| P0-3 故障定界 | Boundary + Output（handoff） |
+| P1-1 上游链 | Memory / Semantic 扩展 |
+| P1-2 延迟治理 | Planner / Tools 效率 |
+
+**P3 预告**：Perception 接实时可观测、Memory 加 SOP 库 + 案例库 + 在线学习闭环——是 v5 的主战场。
+
+---
+
 ## 1. 背景与目标
 
 ### 1.1 v3 已交付（与未交付）

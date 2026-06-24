@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Linux 故障诊断智能体架构</title>
+  <style>
+    :root {
+      --blue:      #1d4ed8;
+      --green:     #065f46;
+      --purple:    #4c1d95;
+      --purple-bg: #f5f3ff;
+      --teal:      #134e4a;
+      --teal-bg:   #f0fdfa;
+      --amber:     #92400e;
+      --amber-bg:  #fef3c7;
+      --out-purple:#4c1d95;
+      --out-bg:    #ede9fe;
+      --gray-line: #e5e7eb;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI','PingFang SC','Microsoft YaHei',Arial,sans-serif;
+      background: #e9ebee; color: #111827;
+      padding: 48px 24px; min-width: 1100px;
+    }
+
+    .page-header { text-align: center; margin-bottom: 52px; }
+    .page-header h1 { font-size: 30px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px; margin-bottom: 8px; }
+    .page-header p  { font-size: 14px; color: #64748b; }
+
+    .section {
+      background: #fff; border-radius: 16px;
+      padding: 36px 48px 40px; margin-bottom: 44px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+    .section-header { display: flex; align-items: flex-start; margin-bottom: 32px; padding-bottom: 18px; border-bottom: 1px solid var(--gray-line); }
+    .badge { width: 38px; height: 38px; border-radius: 50%; background: var(--blue); color: #fff; font-size: 17px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-right: 14px; margin-top: 2px; }
+    .section-header h2 { font-size: 20px; font-weight: 700; color: #0f172a; }
+    .section-header p  { font-size: 13px; color: #64748b; margin-top: 4px; }
+
+    .arrow-h { font-size: 26px; color: #374151; padding: 0 12px; flex-shrink: 0; display: flex; align-items: center; }
+    .arrow-v { text-align: center; color: #6b7280; margin: 6px 0; }
+    .arrow-v .sym { font-size: 22px; display: block; line-height: 1; }
+
+    .box-input  { padding: 18px 20px; background: var(--amber-bg); border: 2px solid #f59e0b; color: var(--amber); border-radius: 10px; text-align: center; font-weight: 700; }
+    .box-output { padding: 18px 20px; background: var(--out-bg); border: 2px solid #7c3aed; color: var(--out-purple); border-radius: 10px; text-align: center; font-weight: 700; }
+
+    .insight { margin-top: 28px; padding: 14px 22px; background: #f0f9ff; border-left: 4px solid #0284c7; border-radius: 4px; color: #0c4a6e; font-size: 14px; font-weight: 500; line-height: 1.7; }
+
+    /* ── Context shared components ───────────── */
+    .ctx-space { border: 2px solid #d1d5db; border-radius: 12px; background: #f9fafb; overflow: hidden; }
+    .ctx-space-label { background: #f3f4f6; padding: 7px 16px; font-size: 12px; font-weight: 700; color: #374151; border-bottom: 1px solid #e5e7eb; letter-spacing: 0.4px; }
+    .ctx-inner { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+
+    /* Each context block has: concept-pill + h4 (framework name) + content */
+    .ctx-block { border-radius: 8px; padding: 12px 14px; }
+    .ctx-block.c-purple { background: var(--purple-bg); border: 1px solid #c4b5fd; }
+    .ctx-block.c-green  { background: #f0fdf4;          border: 1px solid #6ee7b7; }
+    .ctx-block.c-teal   { background: var(--teal-bg);   border: 1px solid #99f6e4; }
+
+    /* Concept pill — shows standard agent term */
+    .concept-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+      padding: 3px 10px; border-radius: 20px; margin-bottom: 6px;
+    }
+    .c-purple .concept-pill { background: #7c3aed; color: #fff; }
+    .c-green  .concept-pill { background: #059669; color: #fff; }
+    .c-teal   .concept-pill { background: #0d9488; color: #fff; }
+
+    /* Framework mapping line */
+    .fw-name { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+    .c-purple .fw-name { color: var(--purple); }
+    .c-green  .fw-name { color: var(--green);  }
+    .c-teal   .fw-name { color: var(--teal);   }
+
+    .ctx-block p  { font-size: 12px; line-height: 1.5; }
+    .c-purple p   { color: #5b21b6; }
+    .c-green  p   { color: #047857; }
+    .c-teal   p   { color: #0f766e; }
+
+    /* ── DIAGRAM 1 ───────────────────────────── */
+    .d1-outer { display: flex; align-items: center; justify-content: center; }
+    .d1-agent { display: flex; align-items: stretch; flex: 1; max-width: 700px; gap: 0; }
+    .d1-llm {
+      width: 160px; flex-shrink: 0;
+      background: var(--blue); color: #fff;
+      border-radius: 10px; padding: 16px 18px; text-align: center;
+      display: flex; flex-direction: column; justify-content: center; gap: 8px;
+    }
+    .d1-llm h3 { font-size: 16px; font-weight: 700; }
+    .d1-llm p  { font-size: 11.5px; opacity: 0.85; line-height: 1.5; }
+    .d1-conn { display: flex; align-items: center; justify-content: center; padding: 0 10px; }
+
+    /* D1 Context: 3 blocks horizontal */
+    .d1-ctx-inner { padding: 10px; display: flex; gap: 8px; }
+    .d1-ctx-inner .ctx-block { flex: 1; }
+
+    /* ── DIAGRAM 2 ───────────────────────────── */
+    .d2-outer { display: flex; align-items: flex-start; justify-content: center; gap: 0; }
+    .d2-agent { flex: 1; display: flex; flex-direction: column; gap: 0; }
+
+    .d2-llm { background: var(--blue); color: #fff; border-radius: 10px; padding: 18px 22px; }
+    .d2-llm h3 { font-size: 15px; font-weight: 700; margin-bottom: 10px; text-align: center; }
+    .d2-cap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .d2-cap { background: rgba(255,255,255,0.16); border-radius: 6px; padding: 9px 10px; font-size: 12px; }
+    .d2-cap b { display: block; margin-bottom: 3px; font-size: 12.5px; }
+
+    .d2-conn { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; margin: 6px 0; }
+    .d2-conn-left  { text-align: center; font-size: 11px; color: #9ca3af; }
+    .d2-conn-left .sym  { font-size: 18px; color: #6b7280; display: block; line-height: 1.4; }
+    .d2-conn-right { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: #9ca3af; }
+    .d2-conn-right .sym { font-size: 16px; color: #6b7280; }
+
+    /* D2 tool grid inside green block */
+    .tool-grid-2 { display: grid; grid-template-columns: repeat(4,1fr); gap: 6px; margin-top: 8px; }
+    .tool-item { font-size: 11px; color: #047857; text-align: center; line-height: 1.4; }
+    .tool-item b { display: block; margin-bottom: 2px; font-size: 11.5px; }
+
+    /* D2 static list */
+    .static-list { list-style: none; padding: 0; margin-top: 6px; }
+    .static-list li { font-size: 11.5px; color: #5b21b6; line-height: 1.75; }
+    .static-list li::before { content: "· "; }
+
+    /* D2 session chips */
+    .session-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .session-chip  { background: rgba(13,148,136,0.12); border: 1px solid #99f6e4; border-radius: 4px; padding: 3px 9px; font-size: 11.5px; color: #0f766e; }
+
+    /* D2 ctx layout: static(1fr) + green(2fr) in top row */
+    .d2-ctx-top { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; }
+
+    .derive-note { margin-top: 28px; padding: 16px 24px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; }
+    .derive-label { text-align: center; font-size: 12px; color: #64748b; font-weight: 600; margin-bottom: 12px; letter-spacing: 0.5px; }
+    .derive-row   { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+    .derive-item  { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #374151; }
+    .tag { padding: 3px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; color: #fff; }
+    .tag-blue   { background: var(--blue); }
+    .tag-purple { background: #7c3aed; }
+    .tag-green  { background: var(--green); }
+    .tag-teal   { background: #0d9488; }
+    .tag-arrow  { color: #9ca3af; font-size: 16px; }
+
+    /* ── DIAGRAM 3 ───────────────────────────── */
+    .d3-wrap { max-width: 1060px; margin: 0 auto; }
+
+    .d3-fault-row { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+    .fault-chip { padding: 11px 20px; background: var(--amber-bg); border: 2px solid #f59e0b; color: var(--amber); border-radius: 8px; font-size: 13px; font-weight: 600; }
+
+    .d3-llm-box { background: var(--blue); color: #fff; border-radius: 12px; padding: 20px 26px; }
+    .d3-llm-box > h3 { text-align: center; font-size: 16px; font-weight: 700; margin-bottom: 14px; }
+    .d3-llm-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
+    .llm-cap { background: rgba(255,255,255,0.15); border-radius: 8px; padding: 12px 14px; }
+    .llm-cap b { display: block; font-size: 13px; margin-bottom: 6px; }
+    .llm-cap span { font-size: 11.5px; opacity: 0.85; line-height: 1.6; display: block; }
+
+    .d3-conn { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin: 6px 0; }
+    .d3-conn-left  { text-align: center; }
+    .d3-conn-left .sym { font-size: 20px; color: #6b7280; display: block; line-height: 1.4; }
+    .d3-conn-left .lbl { font-size: 11px; color: #9ca3af; }
+    .d3-conn-right { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: #9ca3af; }
+    .d3-conn-right .sym { font-size: 17px; color: #6b7280; }
+
+    .d3-ctx-top { display: grid; grid-template-columns: 1fr 3fr; gap: 12px; }
+    .d3-kb-list { list-style: none; padding: 0; margin-top: 8px; }
+    .d3-kb-list li { font-size: 11.5px; color: #5b21b6; font-family: 'Consolas','Fira Code',monospace; line-height: 1.75; }
+    .d3-kb-list li::before { content: "· "; }
+
+    .d3-tools-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-top: 8px; }
+    .tcat { border-radius: 6px; padding: 10px 11px; }
+    .tcat h5 { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+    .tcat ul { list-style: none; padding: 0; }
+    .tcat ul li { font-size: 11px; font-family: 'Consolas','Fira Code',monospace; line-height: 1.7; }
+    .tcat ul li::before    { content: "› "; opacity: 0.5; }
+    .tcat ul li.se::before { content: "⚠ "; opacity: 1; }
+    .tc-log     { background: #fefce8; color: #713f12; border: 1px solid #fde68a; }
+    .tc-metric  { background: #eff6ff; color: #1e3a8a; border: 1px solid #bfdbfe; }
+    .tc-trace   { background: #fdf4ff; color: #581c87; border: 1px solid #e9d5ff; }
+    .tc-proc    { background: #ecfeff; color: #164e63; border: 1px solid #a5f3fc; }
+    .tc-net     { background: #ecfdf5; color: #064e3b; border: 1px solid #a7f3d0; }
+    .tc-storage { background: #fff7ed; color: #7c2d12; border: 1px solid #fed7aa; }
+    .tc-sos     { background: #f0fdf4; color: #14532d; border: 1px solid #86efac; }
+    .tc-exp     { background: #fdf2f8; color: #701a75; border: 1px solid #f0abfc; }
+
+    .d3-session-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; margin-top: 8px; }
+    .sitem { background: rgba(13,148,136,0.1); border: 1px solid #99f6e4; border-radius: 6px; padding: 9px 10px; font-size: 11.5px; color: #0f766e; text-align: center; }
+    .sitem b { display: block; font-size: 12px; margin-bottom: 3px; color: #134e4a; }
+
+    .d3-legend { font-size: 11.5px; color: #374151; }
+
+    /* ── Monitoring vs On-demand subsections ─── */
+    .tool-subsec { border-radius: 7px; padding: 10px 12px; margin-top: 10px; }
+    .ts-monitor  { background: rgba(255,255,255,0.65); border: 1.5px solid #34d399; }
+    .ts-ondemand { background: rgba(255,255,255,0.40); border: 1.5px solid #6ee7b7; }
+    .ts-label { font-size: 11.5px; font-weight: 700; margin-bottom: 8px; }
+    .ts-monitor .ts-label  { color: #064e3b; }
+    .ts-ondemand .ts-label { color: #065f46; }
+    .monitor-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; }
+    .mcat { background: #fff; border: 1px solid #a7f3d0; border-radius: 6px; padding: 10px 11px; }
+    .mcat h5 { font-size: 12px; font-weight: 700; color: #065f46; margin-bottom: 5px; }
+    .mcat ul { list-style: none; padding: 0; }
+    .mcat ul li { font-size: 11px; color: #047857; line-height: 1.75; font-family: 'Consolas','Fira Code',monospace; }
+    .mcat ul li::before { content: "· "; }
+    .d3-tools-grid-sm { display: grid; grid-template-columns: repeat(6,1fr); gap: 8px; }
+
+    .d3-output-box { max-width: 700px; margin: 0 auto; padding: 20px 32px; background: var(--out-bg); border: 2px solid #7c3aed; color: var(--out-purple); border-radius: 12px; text-align: center; }
+    .d3-output-box h3 { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+    .d3-out-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
+    .out-item { background: rgba(109,40,217,0.10); border-radius: 6px; padding: 10px; font-size: 12px; }
+    .out-item b { display: block; margin-bottom: 4px; font-size: 12.5px; }
+
+    /* ── Section 4: Pain points ──────────────── */
+    .challenge-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 4px; }
+    .challenge-card { border: 2px solid #fca5a5; border-radius: 12px; background: #fff7f7; padding: 22px 24px; display: flex; flex-direction: column; gap: 16px; }
+    .ch-header { display: flex; align-items: flex-start; gap: 12px; }
+    .ch-num { width: 32px; height: 32px; border-radius: 50%; background: #dc2626; color: #fff; font-size: 16px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px; }
+    .ch-title { font-size: 16px; font-weight: 700; color: #991b1b; margin-bottom: 4px; }
+    .ch-sub   { font-size: 12.5px; color: #b91c1c; line-height: 1.6; }
+
+    .ch-visual { background: #fff; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; }
+    .ch-impact { margin-top: 12px; padding: 8px 12px; background: #fff1f1; border-left: 3px solid #f87171; border-radius: 0 4px 4px 0; font-size: 12px; color: #7f1d1d; line-height: 1.65; }
+
+    /* Card 1 barrier layout */
+    .barrier-layout { display: grid; grid-template-columns: 1fr 52px 1fr; gap: 10px; align-items: start; }
+    .barrier-side { border-radius: 6px; padding: 10px 12px; }
+    .barrier-side.ok      { background: #f0fdf4; border: 1px solid #86efac; }
+    .barrier-side.blocked { background: #fef2f2; border: 1px solid #fca5a5; }
+    .barrier-side-label { font-size: 11px; font-weight: 700; margin-bottom: 6px; }
+    .barrier-side.ok      .barrier-side-label { color: #15803d; }
+    .barrier-side.blocked .barrier-side-label { color: #dc2626; }
+    .barrier-side ul { list-style: none; padding: 0; }
+    .barrier-side ul li { font-size: 11.5px; line-height: 1.75; font-family: 'Consolas','Fira Code',monospace; }
+    .barrier-side.ok      ul li { color: #166534; }
+    .barrier-side.ok      ul li::before { content: "✓ "; }
+    .barrier-side.blocked ul li { color: #dc2626; }
+    .barrier-side.blocked ul li::before { content: "✗ "; }
+    .barrier-wall { display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 16px; gap: 6px; }
+    .barrier-wall .b-icon  { font-size: 26px; line-height: 1; }
+    .barrier-wall .b-label { font-size: 10px; font-weight: 700; color: #dc2626; text-align: center; line-height: 1.4; }
+
+    /* Card 2 multimodal layout */
+    .modal-channels { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .modal-item { background: #fef9c3; border: 1px solid #fde047; border-radius: 8px; padding: 8px 10px; text-align: center; font-size: 11.5px; color: #713f12; min-width: 84px; flex: 1; }
+    .modal-item .micon { font-size: 22px; display: block; margin-bottom: 4px; }
+    .modal-gap { text-align: center; padding: 9px 0; border-top: 2px dashed #fca5a5; border-bottom: 2px dashed #fca5a5; margin-bottom: 10px; color: #dc2626; font-size: 12px; font-weight: 700; letter-spacing: 0.3px; }
+    .modal-agent { text-align: center; background: #eff6ff; border: 1.5px solid #93c5fd; border-radius: 7px; padding: 10px 14px; font-size: 12.5px; color: #1e3a8a; font-weight: 500; }
+
+    /* Directions */
+    .ch-dir-header { font-size: 11.5px; font-weight: 700; color: #6b7280; margin-bottom: 6px; }
+    .ch-directions { display: flex; flex-wrap: wrap; gap: 7px; }
+    .dir-chip { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 20px; padding: 4px 12px; font-size: 12px; color: #475569; }
+
+    /* Summary status bar */
+    .ctx-status-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+    .ctx-status-item { text-align: center; padding: 12px 8px; border-radius: 8px; }
+    .ctx-status-item .st-icon  { font-size: 22px; margin-bottom: 5px; }
+    .ctx-status-item .st-title { font-size: 12.5px; font-weight: 700; margin-bottom: 3px; }
+    .ctx-status-item .st-sub   { font-size: 11px; }
+    .st-ok   { background: #f0fdf4; border: 1px solid #86efac; }
+    .st-ok   .st-title { color: #166534; }
+    .st-ok   .st-sub   { color: #15803d; }
+    .st-warn { background: #fff7ed; border: 1px solid #fed7aa; }
+    .st-warn .st-title { color: #c2410c; }
+    .st-warn .st-sub   { color: #ea580c; }
+    .st-fail { background: #fff5f5; border: 1px solid #fca5a5; }
+    .st-fail .st-title { color: #dc2626; }
+    .st-fail .st-sub   { color: #ef4444; }
+  </style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>Linux 故障诊断智能体架构</h1>
+  <p>从通用智能体理论到完整 Linux 诊断系统的架构推导</p>
+</div>
+
+
+<!-- ════════════════════════════════════════════
+     图一：通用智能体
+════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="badge">1</div>
+    <div>
+      <h2>通用智能体架构</h2>
+      <p>智能体 = LLM + Context。记忆、工具、知识库，本质上都是 Context 的不同来源</p>
+    </div>
+  </div>
+
+  <div class="d1-outer">
+
+    <div class="box-input" style="width:110px;align-self:center;">
+      <div style="font-size:24px;margin-bottom:6px">❓</div>
+      <div>问题<br>查询</div>
+    </div>
+
+    <div class="arrow-h">→</div>
+
+    <div class="d1-agent">
+      <div class="d1-llm">
+        <h3>🧠 LLM</h3>
+        <p>推理 · 规划<br>工具调用</p>
+      </div>
+      <div class="d1-conn">
+        <span style="font-size:28px;color:#374151;">↕</span>
+      </div>
+      <div class="ctx-space" style="flex:1;">
+        <div class="ctx-space-label">Context（上下文空间）</div>
+        <div class="d1-ctx-inner">
+
+          <div class="ctx-block c-purple">
+            <div class="concept-pill">📚 长期记忆 Long-term Memory</div>
+            <div class="fw-name">静态上下文 · 知识库</div>
+            <p>预加载，不随对话变化<br>知识图谱、历史案例、SOP</p>
+          </div>
+
+          <div class="ctx-block c-green">
+            <div class="concept-pill">🔧 工具 Tool Use</div>
+            <div class="fw-name">动态上下文 · 工具产出</div>
+            <p>LLM 调用工具，结果实时写入 Context</p>
+          </div>
+
+          <div class="ctx-block c-teal">
+            <div class="concept-pill">🧠 工作记忆 Working Memory</div>
+            <div class="fw-name">动态上下文 · 会话积累</div>
+            <p>推理结论追加到对话历史，逐步丰富</p>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-h">→</div>
+
+    <div class="box-output" style="width:110px;align-self:center;">
+      <div style="font-size:24px;margin-bottom:6px">✅</div>
+      <div>答案<br>决策</div>
+    </div>
+
+  </div>
+
+  <div class="insight">
+    <strong>统一视角：</strong>通用智能体框架里常说的「记忆」「工具」「知识库」，在本框架下都是 Context 的不同来源——
+    知识库是预加载的<strong>长期记忆</strong>，工具调用产出的是<strong>情境数据</strong>，对话历史积累的是<strong>工作记忆</strong>。
+    LLM 读取的始终是统一的 Context 空间，并不区分这些数据的来源。
+  </div>
+</div>
+
+
+<!-- ════════════════════════════════════════════
+     图二：Linux 故障诊断智能体
+════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="badge">2</div>
+    <div>
+      <h2>Linux 故障诊断智能体（从通用架构推导）</h2>
+      <p>将通用框架实例化：LLM 扮演资深 SRE，三类 Context 对应内核知识库 · 诊断工具产出 · 诊断推理积累</p>
+    </div>
+  </div>
+
+  <div class="d2-outer">
+
+    <div class="box-input" style="width:140px;align-self:center;">
+      <div style="font-size:24px;margin-bottom:6px">⚠️</div>
+      <div style="font-size:14px">Linux 故障<br>/ 异常告警</div>
+      <div style="font-size:11px;margin-top:6px;opacity:0.75;font-weight:400">panic · hang · OOM<br>性能劣化 · I/O 异常</div>
+    </div>
+
+    <div class="arrow-h">→</div>
+
+    <div class="d2-agent">
+
+      <div class="d2-llm">
+        <h3>🧠 LLM（扮演资深 SRE）</h3>
+        <div class="d2-cap-grid">
+          <div class="d2-cap"><b>Linux 内核知识</b>调度 · 内存 · 网络 · 文件系统 · 驱动</div>
+          <div class="d2-cap"><b>SRE 推理经验</b>故障模式识别 · 5-Why 根因树 · 假设收敛</div>
+        </div>
+      </div>
+
+      <div class="d2-conn">
+        <div class="d2-conn-left">
+          <span class="sym">↕</span>
+          <span>读取所有 Context · 推理输出追加到会话积累</span>
+        </div>
+        <div class="d2-conn-right">
+          <span class="sym">↕</span>
+          <span>工具调用 / 工具产出写入</span>
+        </div>
+      </div>
+
+      <div class="ctx-space">
+        <div class="ctx-space-label" style="display:flex;justify-content:space-between;align-items:center;padding-right:14px;">
+          <span>Context（Linux 诊断上下文空间）</span>
+          <span style="font-size:11px;color:#6b7280;">⚠ = 工具有副作用，需用户授权</span>
+        </div>
+        <div class="ctx-inner">
+
+          <div class="d2-ctx-top">
+
+            <div class="ctx-block c-purple">
+              <div class="concept-pill">📚 长期记忆 Long-term Memory</div>
+              <div class="fw-name">静态上下文 · 知识库（预加载）</div>
+              <ul class="static-list">
+                <li>OLK commit 历史（v6.6+v5.10）</li>
+                <li>LKML 邮件讨论归档</li>
+                <li>CVE 漏洞与修复 commit</li>
+                <li>Bugzilla 故障报告库</li>
+                <li>syzbot 崩溃案例</li>
+                <li>SOP 标准处理流程</li>
+                <li>源码语义索引</li>
+              </ul>
+            </div>
+
+            <div class="ctx-block c-green">
+              <div class="concept-pill">🔧 工具 Tool Use</div>
+              <div class="fw-name">动态上下文 · 工具产出</div>
+              <div class="tool-grid-2">
+                <div class="tool-item"><b>系统日志</b>dmesg · journal<br>syslog · kdump</div>
+                <div class="tool-item"><b>系统指标</b>/proc · /sys<br>vmstat · iostat</div>
+                <div class="tool-item"><b>动态追踪</b>perf · eBPF<br>ftrace · strace</div>
+                <div class="tool-item"><b>进程资源</b>ps · lsof<br>cgroup 统计</div>
+                <div class="tool-item"><b>网络诊断</b>ss · tcpdump<br>ethtool · mtr</div>
+                <div class="tool-item"><b>存储诊断</b>smartctl<br>blktrace</div>
+                <div class="tool-item"><b>现场快照</b>sosreport<br>SAR</div>
+                <div class="tool-item"><b>实验结果</b>stress-ng<br>fio · sysctl</div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="ctx-block c-teal">
+            <div class="concept-pill">🧠 工作记忆 Working Memory</div>
+            <div class="fw-name">动态上下文 · 会话积累（LLM 推理输出追加到对话历史）</div>
+            <div class="session-chips">
+              <div class="session-chip">当前根因假设（置信度）</div>
+              <div class="session-chip">已确认的异常现象</div>
+              <div class="session-chip">已排除的可能性 + 排除理由</div>
+              <div class="session-chip">待验证假设列表</div>
+              <div class="session-chip">已调用工具及结果摘要</div>
+              <div class="session-chip">关键证据链（日志 · commit · CVE）</div>
+              <div class="session-chip">下一步调查方向</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+    <div class="arrow-h">→</div>
+
+    <div class="box-output" style="width:140px;align-self:center;">
+      <div style="font-size:24px;margin-bottom:6px">🎯</div>
+      <div style="font-size:14px">根因定位<br>修复建议</div>
+      <div style="font-size:11px;margin-top:6px;opacity:0.75;font-weight:400">原因 · patch · SOP<br>预防措施</div>
+    </div>
+
+  </div>
+
+  <div class="derive-note">
+    <div class="derive-label">通用智能体概念 → 本框架实现</div>
+    <div class="derive-row">
+      <div class="derive-item"><span class="tag tag-blue">LLM</span><span class="tag-arrow">→</span><span>拥有 Linux/SRE 知识的大模型，充当 SRE 大脑</span></div>
+      <div class="derive-item"><span class="tag tag-purple">长期记忆</span><span class="tag-arrow">=</span><span>静态上下文 · 知识图谱：LKML · CVE · OLK commit · SOP</span></div>
+      <div class="derive-item"><span class="tag tag-green">工具</span><span class="tag-arrow">→</span><span>动态上下文 · 工具产出：日志 · 指标 · 追踪 · 实验结果</span></div>
+      <div class="derive-item"><span class="tag tag-teal">工作记忆</span><span class="tag-arrow">=</span><span>动态上下文 · 会话积累：中间假设 · 已排除路径 · 证据链</span></div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ════════════════════════════════════════════
+     图三：完整架构
+════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="badge">3</div>
+    <div>
+      <h2>完整 Linux 故障诊断智能体架构</h2>
+      <p>面向企业级 OLK 内核（v6.6 / v5.10）的完整诊断系统</p>
+    </div>
+  </div>
+
+  <div class="d3-wrap">
+
+    <div class="d3-fault-row">
+      <div class="fault-chip">⚠️ 系统崩溃 / Kernel Panic</div>
+      <div class="fault-chip">🐌 性能劣化 / Hang / Soft Lockup</div>
+      <div class="fault-chip">💾 OOM / 内存异常</div>
+      <div class="fault-chip">🌐 网络故障 / I/O 异常</div>
+      <div class="fault-chip">🔒 死锁 / RCU Stall</div>
+    </div>
+
+    <div class="arrow-v"><span class="sym">↓</span></div>
+
+    <div class="d3-llm-box">
+      <h3>🧠 诊断推理引擎（LLM）— 扮演资深 Linux SRE，持有完整内核知识与故障推理经验</h3>
+      <div class="d3-llm-grid">
+        <div class="llm-cap">
+          <b>进程 · 并发 · 调度</b>
+          <span>CFS/RT 调度器 · 优先级反转<br>cgroup CPU 配额 · CPU 亲和性<br>死锁/活锁 · RCU stall<br>spinlock 争用 · lockdep</span>
+        </div>
+        <div class="llm-cap">
+          <b>内存 · 驱动 · 硬件</b>
+          <span>OOM Killer 决策链<br>zone/slab/buddy · hugepages<br>PCIe AER · MCE/EDAC<br>设备驱动崩溃 · 固件异常</span>
+        </div>
+        <div class="llm-cap">
+          <b>网络 · 文件系统 · I/O</b>
+          <span>TCP 拥塞/重传 · conntrack<br>NIC ring buffer 溢出<br>VFS/block 层堆栈<br>I/O 调度器 · NVMe/SCSI</span>
+        </div>
+        <div class="llm-cap">
+          <b>SRE 方法论 · OLK 专项</b>
+          <span>假设→验证 · 5-Why 根因树<br>故障域隔离 · 变更相关性<br>OLK 补丁包含逻辑<br>鲲鹏/Ascend · openEuler 差异</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="d3-conn">
+      <div class="d3-conn-left">
+        <span class="sym">↕</span>
+        <span class="lbl">读取所有 Context · 推理输出追加到会话积累（工作记忆）</span>
+      </div>
+      <div class="d3-conn-right">
+        <span class="sym">↕</span>
+        <span>工具调用 / 工具产出写入</span>
+      </div>
+    </div>
+
+    <div class="ctx-space">
+      <div class="ctx-space-label" style="display:flex;justify-content:space-between;align-items:center;padding-right:16px;">
+        <span>Context（Linux 诊断上下文空间）</span>
+        <span class="d3-legend">⚠ = 工具有副作用，需用户授权</span>
+      </div>
+      <div class="ctx-inner">
+
+        <div class="d3-ctx-top">
+
+          <div class="ctx-block c-purple">
+            <div class="concept-pill">📚 长期记忆 Long-term Memory</div>
+            <div class="fw-name">静态上下文 · 离线知识图谱</div>
+            <ul class="d3-kb-list">
+              <li>OLK commit 历史（v6.6+v5.10）</li>
+              <li>LKML 邮件讨论归档</li>
+              <li>CVE 漏洞与修复 commit</li>
+              <li>Bugzilla 故障报告库</li>
+              <li>syzbot 崩溃案例库</li>
+              <li>SOP 标准处理流程</li>
+              <li>源码语义索引（Zoekt+SCIP）</li>
+              <li>openEuler issue · patch</li>
+            </ul>
+          </div>
+
+          <div class="ctx-block c-green">
+            <div class="concept-pill">🔧 工具 Tool Use</div>
+            <div class="fw-name">动态上下文 · 工具产出（LLM 调用工具，结果实时写入 Context）</div>
+
+            <!-- ① Monitoring systems — data already there, query only -->
+            <div class="tool-subsec ts-monitor">
+              <div class="ts-label">📊 监控系统查询 — 数据已持续采集，直接查询即可；低风险，优先使用</div>
+              <div class="monitor-grid">
+                <div class="mcat">
+                  <h5>Prometheus</h5>
+                  <ul>
+                    <li>CPU / 负载趋势</li>
+                    <li>内存 / OOM 事件</li>
+                    <li>磁盘 IO / 使用率</li>
+                    <li>网络吞吐 / 丢包</li>
+                    <li>告警历史记录</li>
+                    <li>业务自定义指标</li>
+                  </ul>
+                </div>
+                <div class="mcat">
+                  <h5>Elasticsearch / Loki</h5>
+                  <ul>
+                    <li>内核日志 (dmesg)</li>
+                    <li>syslog / kern.log</li>
+                    <li>journal 全量日志</li>
+                    <li>应用异常日志</li>
+                    <li>auditd / mcelog</li>
+                    <li>慢查询 / 错误聚合</li>
+                  </ul>
+                </div>
+                <div class="mcat">
+                  <h5>Grafana / 可观测平台</h5>
+                  <ul>
+                    <li>异常时段趋势图</li>
+                    <li>资源饱和度面板</li>
+                    <li>多机对比视图</li>
+                    <li>SLO / 错误率看板</li>
+                    <li>告警触发时间线</li>
+                  </ul>
+                </div>
+                <div class="mcat">
+                  <h5>CMDB / 变更平台</h5>
+                  <ul>
+                    <li>Deploy 时间记录</li>
+                    <li>内核 / 包版本变更</li>
+                    <li>配置变更历史</li>
+                    <li>硬件资产信息</li>
+                    <li>服务依赖拓扑</li>
+                  </ul>
+                </div>
+                <div class="mcat">
+                  <h5>IPMI / BMC</h5>
+                  <ul>
+                    <li>CPU 温度 / 功耗</li>
+                    <li>内存 ECC 错误</li>
+                    <li>磁盘健康 (SMART)</li>
+                    <li>风扇 / 电源状态</li>
+                    <li>硬件告警事件</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <!-- ② On-demand tools — actively triggered, few cases -->
+            <div class="tool-subsec ts-ondemand">
+              <div class="ts-label">🔬 按需诊断工具 — 监控数据不足时主动触发；部分需授权或有副作用</div>
+              <div class="d3-tools-grid-sm">
+                <div class="tcat tc-trace">
+                  <h5>🔬 动态追踪</h5>
+                  <ul>
+                    <li>perf stat / record</li>
+                    <li>eBPF / bpftrace</li>
+                    <li>BCC 工具集</li>
+                    <li>ftrace / trace-cmd</li>
+                    <li>kprobes / uprobes</li>
+                    <li>SystemTap</li>
+                  </ul>
+                </div>
+                <div class="tcat tc-proc">
+                  <h5>⚙️ 进程深挖</h5>
+                  <ul>
+                    <li>/proc/[pid]/stack</li>
+                    <li>/proc/[pid]/maps · fd</li>
+                    <li>strace -p</li>
+                    <li>cgroup v2 实时</li>
+                    <li>numastat</li>
+                    <li>perf top -p</li>
+                  </ul>
+                </div>
+                <div class="tcat tc-net">
+                  <h5>🌐 网络抓包</h5>
+                  <ul>
+                    <li>tcpdump / Wireshark</li>
+                    <li>conntrack -L</li>
+                    <li>ethtool -S (实时)</li>
+                    <li>ss -antup</li>
+                    <li>mtr · traceroute</li>
+                  </ul>
+                </div>
+                <div class="tcat tc-storage">
+                  <h5>💾 存储诊断</h5>
+                  <ul>
+                    <li>smartctl -a</li>
+                    <li>blktrace / blkparse</li>
+                    <li>nvme smart-log</li>
+                    <li>lvs · pvs 详情</li>
+                    <li class="se">xfs_repair / fsck</li>
+                  </ul>
+                </div>
+                <div class="tcat tc-sos">
+                  <h5>📦 现场快照</h5>
+                  <ul>
+                    <li>sosreport</li>
+                    <li>kdump vmcore</li>
+                    <li>crash 符号分析</li>
+                    <li>ramoops / pstore</li>
+                    <li>/proc 全量快照</li>
+                  </ul>
+                </div>
+                <div class="tcat tc-exp">
+                  <h5>🧪 实验 &amp; 复现</h5>
+                  <ul>
+                    <li>stress-ng · fio</li>
+                    <li>fault injection</li>
+                    <li>QEMU/KVM 隔离</li>
+                    <li class="se">sysctl -w</li>
+                    <li class="se">modprobe / rmmod</li>
+                    <li class="se">patch + reboot</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+
+        <div class="ctx-block c-teal">
+          <div class="concept-pill">🧠 工作记忆 Working Memory</div>
+          <div class="fw-name">动态上下文 · 会话积累（LLM 推理输出追加到对话历史，供后续推理读取）</div>
+          <div class="d3-session-grid">
+            <div class="sitem"><b>当前根因假设</b>最可能的故障原因 + 当前置信度</div>
+            <div class="sitem"><b>已确认异常现象</b>经多工具交叉验证的事实</div>
+            <div class="sitem"><b>已排除的可能性</b>证据否定的假设 + 排除理由</div>
+            <div class="sitem"><b>待验证假设列表</b>尚未获得充分证据的路径</div>
+            <div class="sitem"><b>关键证据链</b>日志 · commit · CVE · 指标时序</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="arrow-v" style="margin-top:10px;"><span class="sym">↓</span></div>
+
+    <div class="d3-output-box">
+      <h3>🎯 诊断输出</h3>
+      <div class="d3-out-grid">
+        <div class="out-item"><b>根因报告</b>故障触发链路<br>根因组件定位<br>影响范围评估</div>
+        <div class="out-item"><b>修复方案</b>临时缓解措施<br>内核 patch 推荐<br>配置参数调整</div>
+        <div class="out-item"><b>证据链</b>关键日志片段<br>指标异常时序<br>关联 commit/CVE</div>
+        <div class="out-item"><b>预防措施</b>监控告警配置<br>系统配置加固<br>SOP 更新建议</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ════════════════════════════════════════════
+     图四：当前落地难点
+════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-header">
+    <div class="badge" style="background:#dc2626;">!</div>
+    <div>
+      <h2>当前落地难点</h2>
+      <p>动态上下文存在两类系统性缺口，制约了诊断智能体在真实生产环境中的落地效果</p>
+    </div>
+  </div>
+
+  <div style="margin-bottom:22px;padding:14px 20px;background:#fff7f7;border:1px solid #fecaca;border-radius:8px;font-size:13.5px;color:#7f1d1d;line-height:1.75;">
+    静态上下文（知识库）与监控系统查询已基本可用，但<strong>动态上下文仍存在两类缺口</strong>：
+    一是生产环境工具访问受限，导致部分根因无法通过实验验证；
+    二是人员间多模态交流内容无法进入 Context，形成重要的信息盲区。
+  </div>
+
+  <div class="challenge-grid">
+
+    <!-- ── 难点① ─────────────────────────────── -->
+    <div class="challenge-card">
+      <div class="ch-header">
+        <div class="ch-num">①</div>
+        <div>
+          <div class="ch-title">生产环境工具访问受限</div>
+          <div class="ch-sub">部分根因只能通过在生产环境多次试验才能确认，而当前 SRE 规范几乎不允许在线上执行有副作用的操作</div>
+        </div>
+      </div>
+
+      <div class="ch-visual">
+        <div class="barrier-layout">
+          <div class="barrier-side ok">
+            <div class="barrier-side-label">✅ 当前可获取</div>
+            <ul>
+              <li>监控系统查询</li>
+              <li>日志检索分析</li>
+              <li>只读 /proc 读取</li>
+              <li>历史快照 · SAR</li>
+              <li>源码 · Commit 检索</li>
+              <li>kdump vmcore 分析</li>
+            </ul>
+          </div>
+          <div class="barrier-wall">
+            <div class="b-icon">⛔</div>
+            <div class="b-label">生产<br>环境<br>壁垒</div>
+          </div>
+          <div class="barrier-side blocked">
+            <div class="barrier-side-label">⛔ 受阻 / 不可用</div>
+            <ul>
+              <li>stress-ng 压力复现</li>
+              <li>sysctl -w 参数实验</li>
+              <li>modprobe 驱动调试</li>
+              <li>fault injection</li>
+              <li>patch apply + reboot</li>
+              <li>网络丢包注入</li>
+            </ul>
+          </div>
+        </div>
+        <div class="ch-impact">
+          <b>影响：</b>需要多次试验才能复现的故障（如特定负载下的内存碎片化、驱动参数敏感性、竞争条件触发），智能体只能靠推理猜测，无法通过实验实证，诊断结论的置信度受到根本性限制。
+        </div>
+      </div>
+
+      <div class="ch-dir-header">探索方向</div>
+      <div class="ch-directions">
+        <div class="dir-chip">Staging 环境生产流量镜像</div>
+        <div class="dir-chip">Chaos Engineering 框架</div>
+        <div class="dir-chip">沙箱 VM 快速克隆</div>
+        <div class="dir-chip">只读诊断 + Staging 实验分离</div>
+      </div>
+    </div>
+
+    <!-- ── 难点② ─────────────────────────────── -->
+    <div class="challenge-card">
+      <div class="ch-header">
+        <div class="ch-num">②</div>
+        <div>
+          <div class="ch-title">多模态人员交流上下文缺失</div>
+          <div class="ch-sub">真实故障排查中，大量关键信息以语音、截图、白板等多模态形式在人员间流转，从未进入智能体的 Context</div>
+        </div>
+      </div>
+
+      <div class="ch-visual">
+        <div class="modal-channels">
+          <div class="modal-item">
+            <span class="micon">🗣️</span>语音通话<br>跨团队讨论
+          </div>
+          <div class="modal-item">
+            <span class="micon">📺</span>屏幕共享<br>界面实时观察
+          </div>
+          <div class="modal-item">
+            <span class="micon">📋</span>白板讨论<br>架构图绘制
+          </div>
+          <div class="modal-item">
+            <span class="micon">💬</span>IM 截图<br>日志片段传递
+          </div>
+          <div class="modal-item">
+            <span class="micon">📧</span>邮件 / 文档<br>故障复盘记录
+          </div>
+        </div>
+        <div class="modal-gap">× &nbsp; 以上多模态内容当前无法自动流入 Context &nbsp; ×</div>
+        <div class="modal-agent">🤖 诊断智能体 — 目前只能读取结构化文本 · 日志 · 指标</div>
+        <div class="ch-impact">
+          <b>影响：</b>War Room 中讨论出的关键判断、同事发来的 Dashboard 截图、客户描述的故障现象画面——这些高价值的多模态信息对智能体完全不可见，形成严重的上下文盲区，尤其在涉及多团队协同的复杂故障中损失最大。
+        </div>
+      </div>
+
+      <div class="ch-dir-header">探索方向</div>
+      <div class="ch-directions">
+        <div class="dir-chip">会议自动转录接入</div>
+        <div class="dir-chip">截图 / 录屏 OCR 解析</div>
+        <div class="dir-chip">多模态 LLM（视觉理解）</div>
+        <div class="dir-chip">War Room Bot 集成</div>
+        <div class="dir-chip">IM 机器人摘要</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Context completeness status bar -->
+  <div style="margin-top:26px;padding:18px 24px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;">
+    <div style="font-size:12px;font-weight:700;color:#64748b;margin-bottom:14px;letter-spacing:0.5px;">上下文完整性现状</div>
+    <div class="ctx-status-grid">
+      <div class="ctx-status-item st-ok">
+        <div class="st-icon">✅</div>
+        <div class="st-title">静态上下文</div>
+        <div class="st-sub">知识库已就绪</div>
+      </div>
+      <div class="ctx-status-item st-ok">
+        <div class="st-icon">✅</div>
+        <div class="st-title">监控系统查询</div>
+        <div class="st-sub">指标 · 日志可查</div>
+      </div>
+      <div class="ctx-status-item st-warn">
+        <div class="st-icon">⚠️</div>
+        <div class="st-title">按需诊断工具</div>
+        <div class="st-sub">生产环境受限 — 难点①</div>
+      </div>
+      <div class="ctx-status-item st-fail">
+        <div class="st-icon">❌</div>
+        <div class="st-title">多模态交流内容</div>
+        <div class="st-sub">尚待完善 — 难点②</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
